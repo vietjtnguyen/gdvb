@@ -337,7 +337,7 @@ def sock_full(s, pids):
     )
 
 
-def build_graph(procs, socks, inode2pids, is_root, ignore=None):
+def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
     ignore = ignore or set()
     nodes, edges = [], []
     node_ids = set()
@@ -469,9 +469,10 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None):
         counts["by_class"][e["cls"]] = counts["by_class"].get(e["cls"], 0) + 1
 
     types = [t for t in TYPES if t["id"] not in ignore]
+    captured = captured or datetime.datetime.now().astimezone()
     meta = {
         "host": socket.gethostname(),
-        "captured": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "captured": captured.isoformat(timespec="seconds"),
         "root": is_root,
         "ignored": sorted(ignore),
         "counts": counts,
@@ -528,10 +529,14 @@ def main():
         ),
         epilog=(
             "examples:\n"
-            "  sudo socketscope.py                  full visibility, writes sockets.html\n"
-            "  socketscope.py -o net.html           unprivileged (your processes only)\n"
-            "  sudo socketscope.py --ignore-uds     drop UNIX-domain sockets (less noise)\n"
-            "  sudo socketscope.py --ignore unix-unnamed,udp\n"
+            "  sudo socketscope.py                  full visibility -> socketscope-<ts>.html\n"
+            "  sudo socketscope.py --json           also write socketscope-<ts>.json\n"
+            "  sudo socketscope.py --json --no-html -o - | jq .   stream JSON to a pipe\n"
+            "  socketscope.py --ignore-uds -o net   unprivileged -> net.html (less noise)\n"
+            "\n"
+            "Output is a point-in-time snapshot; the base name defaults to a timestamp\n"
+            "(socketscope-YYYY-MM-DD-HH-MM-SS) so runs don't overwrite each other. The\n"
+            ".html / .json extension is appended automatically.\n"
             "\n"
             "Run as root (sudo) to attribute system-owned sockets to their processes.\n"
             "The legend in the viewer can also show/hide types after the fact; --ignore\n"
@@ -540,12 +545,24 @@ def main():
             "node type ids (for --ignore): " + ", ".join(type_ids)
         ),
     )
-    ap.add_argument(
+    out = ap.add_argument_group("output")
+    out.add_argument(
         "-o",
         "--out",
-        default="sockets.html",
-        metavar="FILE",
-        help="output HTML path (default: sockets.html)",
+        default=None,
+        metavar="NAME",
+        help="output base name; .html/.json appended (default: "
+        "socketscope-<timestamp>). Use '-' to write to stdout.",
+    )
+    out.add_argument(
+        "--no-html",
+        action="store_true",
+        help="do not write the interactive HTML viewer",
+    )
+    out.add_argument(
+        "--json",
+        action="store_true",
+        help="also write the raw graph model as JSON (nodes, edges, meta)",
     )
     g = ap.add_argument_group("filtering (exclude node types from the graph)")
     g.add_argument(
@@ -602,39 +619,84 @@ def main():
         )
 
     is_root = os.geteuid() == 0
+
+    # Resolve the output base name and which artifacts to write (fail fast,
+    # before scanning /proc). Default base is a timestamp so snapshots don't
+    # overwrite each other; the .html/.json extension is appended below.
+    now = datetime.datetime.now().astimezone()
+    base = args.out
+    if base is None:
+        base = "socketscope-" + now.strftime("%Y-%m-%d-%H-%M-%S")
+    elif base != "-":
+        for ext in (".html", ".json"):  # forgive an explicitly-typed extension
+            if base.lower().endswith(ext):
+                base = base[: -len(ext)]
+                break
+    write_html = not args.no_html
+    write_json = args.json
+    if not write_html and not write_json:
+        ap.error("nothing to write: --no-html given without --json")
+    to_stdout = base == "-"
+    if to_stdout and write_html and write_json:
+        ap.error("cannot write both HTML and JSON to stdout; pick one")
+
     procs = read_processes()
     socks = read_sockets()
     inode2pids = map_inode_pids(list(procs.keys()))
-    model, unattributed = build_graph(procs, socks, inode2pids, is_root, ignore)
+    model, unattributed = build_graph(procs, socks, inode2pids, is_root, ignore, now)
 
-    html_out = emit_html(model)
-    with open(args.out, "w", encoding="utf-8") as fh:
-        fh.write(html_out)
+    wrote = []
+    if write_html:
+        html_out = emit_html(model)
+        if to_stdout:
+            sys.stdout.write(html_out)
+        else:
+            path = base + ".html"
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(html_out)
+            wrote.append(path)
+    if write_json:
+        json_out = json.dumps(model, ensure_ascii=False, indent=2)
+        if to_stdout:
+            sys.stdout.write(json_out + "\n")
+        else:
+            path = base + ".json"
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(json_out + "\n")
+            wrote.append(path)
+
+    # Human-readable summary -> stderr, so stdout stays clean for piped data.
+    def log(msg=""):
+        print(msg, file=sys.stderr)
 
     c = model["meta"]["counts"]
-    print("socketscope  -  Linux socket & process graph  -  point-in-time snapshot")
-    print("  host:      %s" % model["meta"]["host"])
-    print("  captured:  %s" % model["meta"]["captured"])
-    print(
+    log("socketscope  -  Linux socket & process graph  -  point-in-time snapshot")
+    log("  host:      %s" % model["meta"]["host"])
+    log("  captured:  %s" % model["meta"]["captured"])
+    log(
         "  privilege: %s"
         % ("root (full visibility)" if is_root else "unprivileged (own processes only)")
     )
     if ignore:
-        print("  ignored types: %s" % ", ".join(sorted(ignore)))
-    print("  nodes: %d   edges: %d" % (c["nodes"], c["edges"]))
-    print("  nodes by type:")
+        log("  ignored types: %s" % ", ".join(sorted(ignore)))
+    log("  nodes: %d   edges: %d" % (c["nodes"], c["edges"]))
+    log("  nodes by type:")
     for t in TYPES:
         if c["by_type"].get(t["id"]):
-            print("      %-12s %d" % (t["id"], c["by_type"][t["id"]]))
-    print("  edges by class:")
+            log("      %-12s %d" % (t["id"], c["by_type"][t["id"]]))
+    log("  edges by class:")
     for cls in ("tree", "io"):
         if c["by_class"].get(cls):
-            print("      %-12s %d" % (cls, c["by_class"][cls]))
-    print("  sockets not attributed to a process: %d" % unattributed)
+            log("      %-12s %d" % (cls, c["by_class"][cls]))
+    log("  sockets not attributed to a process: %d" % unattributed)
     if unattributed > 0 and not is_root:
-        print("  hint: re-run with 'sudo' to attribute system-owned sockets.")
-    print("  wrote: %s" % os.path.abspath(args.out))
-    print("  (snapshot only - re-run to refresh.)")
+        log("  hint: re-run with 'sudo' to attribute system-owned sockets.")
+    if to_stdout:
+        log("  wrote: <stdout>")
+    else:
+        for p in wrote:
+            log("  wrote: %s" % os.path.abspath(p))
+    log("  (snapshot only - re-run to refresh.)")
 
 
 HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>socketscope — Linux socket &amp; process graph</title>

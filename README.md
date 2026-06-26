@@ -7,8 +7,8 @@
 It's one Python script with **zero dependencies** (standard library only). The visualization library is baked into the script, so the HTML it produces works completely offline.
 
 ```bash
-sudo python3 socketscope.py -o sockets.html
-# then open sockets.html in your browser
+sudo python3 socketscope.py            # writes socketscope-<timestamp>.html
+# then open that file in your browser
 ```
 
 ---
@@ -28,7 +28,7 @@ sudo python3 socketscope.py -o sockets.html
 There's nothing to install — it's one file with no dependencies. Copy `socketscope.py` onto the host and run it:
 
 ```bash
-python3 socketscope.py -o sockets.html
+python3 socketscope.py
 ```
 
 Optionally make it executable (`chmod +x socketscope.py` → `./socketscope.py`). Run with `sudo` for full visibility (see below).
@@ -36,15 +36,19 @@ Optionally make it executable (`chmod +x socketscope.py` → `./socketscope.py`)
 ## Usage
 
 ```bash
-sudo python3 socketscope.py                  # full visibility -> sockets.html
-python3 socketscope.py -o net.html           # unprivileged: only your own processes
-sudo python3 socketscope.py --ignore-uds     # skip UNIX-domain sockets (much less noise)
-sudo python3 socketscope.py --ignore unix-unnamed,udp
+sudo python3 socketscope.py                          # -> socketscope-<timestamp>.html
+sudo python3 socketscope.py --json                   # also write the .json model
+sudo python3 socketscope.py --json --no-html -o - | jq .   # stream JSON to a pipe
+socketscope.py --ignore-uds -o net                   # unprivileged -> net.html
 ```
 
 **Run as root (`sudo`) for the full picture.** Unprivileged, the kernel only lets you see the file descriptors of your *own* processes, so most sockets can't be attributed to a process. socketscope still works — it just shows less, and prints a hint to re-run with `sudo`. The capture summary always reports how many sockets it couldn't attribute.
 
 It's a **snapshot** — re-run it any time to refresh.
+
+### Output
+
+By default socketscope writes one file, **`socketscope-<timestamp>.html`**, so repeated runs don't overwrite each other. `-o NAME` sets the base name and the `.html`/`.json` extension is appended for you (a name you type *with* an extension is accepted too). Add **`--json`** to also write the raw graph model as `<base>.json`, **`--no-html`** to skip the viewer, and **`-o -`** to stream a single artifact to stdout — so `socketscope.py --json --no-html -o - | jq` works for scripting. The human-readable capture summary always goes to **stderr**, keeping stdout clean for piping. The JSON is the same `{meta, types, nodes, edges}` model the viewer's "Download data" button produces.
 
 ### Filtering at capture time
 
