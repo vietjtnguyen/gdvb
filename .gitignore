@@ -1,0 +1,12 @@
+# Generated snapshots (contain a picture of the host's processes/sockets — keep local)
+socketscope-*.html
+socketscope-*.json
+/sockets.html
+
+# Python
+__pycache__/
+*.py[cod]
+
+# OS / editor cruft
+.DS_Store
+.init-conversation.chat.txt
