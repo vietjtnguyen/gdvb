@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""socket_graph.py - Linux socket & process graph explorer.
+"""socketscope - Linux socket & process graph explorer.
 
 Snapshots every open socket and the processes using them (plus the process
 tree) straight from /proc, then writes ONE self-contained, offline, interactive
@@ -10,8 +10,8 @@ Stdlib only - no external Python packages. Cytoscape.js is vendored inline
 in any browser with no network access.
 
 Usage:
-    sudo python3 socket_graph.py             # full process<->socket visibility
-    python3 socket_graph.py -o sockets.html  # works unprivileged (own procs only)
+    sudo python3 socketscope.py              # full process<->socket visibility
+    python3 socketscope.py -o sockets.html   # works unprivileged (own procs only)
 
 It is a point-in-time snapshot; re-run to refresh.
 """
@@ -39,20 +39,29 @@ def cyto_js():
 # Node types (drive color / filter / legend)
 # ---------------------------------------------------------------------------
 TYPES = [
-    {"id": "proc-root",   "label": "Process (root)",   "color": "#E0533F"},
-    {"id": "proc-user",   "label": "Process (user)",   "color": "#3F8EE0"},
-    {"id": "proc-kernel", "label": "Kernel thread",    "color": "#9AA0A6"},
-    {"id": "tcp",         "label": "TCP socket",       "color": "#2FA86E"},
-    {"id": "udp",         "label": "UDP socket",       "color": "#C9A227"},
-    {"id": "unix",         "label": "UNIX socket (named)",   "color": "#8A63D2"},
+    {"id": "proc-root", "label": "Process (root)", "color": "#E0533F"},
+    {"id": "proc-user", "label": "Process (user)", "color": "#3F8EE0"},
+    {"id": "proc-kernel", "label": "Kernel thread", "color": "#9AA0A6"},
+    {"id": "tcp", "label": "TCP socket", "color": "#2FA86E"},
+    {"id": "udp", "label": "UDP socket", "color": "#C9A227"},
+    {"id": "unix", "label": "UNIX socket (named)", "color": "#8A63D2"},
     {"id": "unix-unnamed", "label": "UNIX socket (unnamed)", "color": "#B9A3E3"},
-    {"id": "remote",      "label": "Remote endpoint",  "color": "#D46BB0"},
+    {"id": "remote", "label": "Remote endpoint", "color": "#D46BB0"},
 ]
 
 TCP_STATES = {
-    0x01: "ESTABLISHED", 0x02: "SYN_SENT", 0x03: "SYN_RECV", 0x04: "FIN_WAIT1",
-    0x05: "FIN_WAIT2", 0x06: "TIME_WAIT", 0x07: "CLOSE", 0x08: "CLOSE_WAIT",
-    0x09: "LAST_ACK", 0x0A: "LISTEN", 0x0B: "CLOSING", 0x0C: "NEW_SYN_RECV",
+    0x01: "ESTABLISHED",
+    0x02: "SYN_SENT",
+    0x03: "SYN_RECV",
+    0x04: "FIN_WAIT1",
+    0x05: "FIN_WAIT2",
+    0x06: "TIME_WAIT",
+    0x07: "CLOSE",
+    0x08: "CLOSE_WAIT",
+    0x09: "LAST_ACK",
+    0x0A: "LISTEN",
+    0x0B: "CLOSING",
+    0x0C: "NEW_SYN_RECV",
 }
 
 
@@ -96,7 +105,7 @@ def read_processes():
             cmdline = " ".join(argv)
         except (PermissionError, FileNotFoundError, ProcessLookupError, OSError):
             cmdline = ""
-        is_kernel_thread = (cmdline == "")
+        is_kernel_thread = cmdline == ""
         if not cmdline:
             cmdline = "[%s]" % (name or "?")
         try:
@@ -104,10 +113,14 @@ def read_processes():
         except (KeyError, TypeError):
             user = str(uid)
         procs[pid] = {
-            "pid": pid, "comm": name or "?", "cmdline": cmdline,
-            "uid": uid if uid is not None else -1, "user": user,
+            "pid": pid,
+            "comm": name or "?",
+            "cmdline": cmdline,
+            "uid": uid if uid is not None else -1,
+            "user": user,
             "ppid": ppid if ppid is not None else 0,
-            "is_kernel_thread": is_kernel_thread, "state": state or "?",
+            "is_kernel_thread": is_kernel_thread,
+            "state": state or "?",
         }
     return procs
 
@@ -126,7 +139,7 @@ def _ipv6(hex_field):
     """32 hex chars = 4 little-endian 32-bit words -> IPv6 string."""
     ip_hex, port_hex = hex_field.split(":")
     b = bytes.fromhex(ip_hex)
-    raw = b"".join(b[i:i + 4][::-1] for i in range(0, 16, 4))
+    raw = b"".join(b[i : i + 4][::-1] for i in range(0, 16, 4))
     ip = socket.inet_ntop(socket.AF_INET6, raw)
     # collapse v4-mapped ::ffff:a.b.c.d already handled by inet_ntop
     return ip, int(port_hex, 16)
@@ -164,22 +177,31 @@ def parse_inet(path, family):
                 rip, rport = _ipv4(f[2])
         except (ValueError, IndexError, OSError):
             continue
-        if inode == "0":   # TIME_WAIT / request socks: no fd, not attributable
+        if inode == "0":  # TIME_WAIT / request socks: no fd, not attributable
             continue
         if is_udp:
             listening = False
             state = "BOUND"
         else:
-            listening = (st == 0x0A)
+            listening = st == 0x0A
             state = TCP_STATES.get(st, "0x%02X" % st)
-        has_peer = (rport != 0 and rip not in ("0.0.0.0", "::"))
-        out.append({
-            "inode": inode, "family": family, "base": base_fam,
-            "kind": "dgram" if is_udp else "stream", "state": state,
-            "local": _fmt(lip, lport), "peer": _fmt(rip, rport) if has_peer else "",
-            "lip": lip, "lport": lport, "rip": rip, "rport": rport,
-            "listening": listening,
-        })
+        has_peer = rport != 0 and rip not in ("0.0.0.0", "::")
+        out.append(
+            {
+                "inode": inode,
+                "family": family,
+                "base": base_fam,
+                "kind": "dgram" if is_udp else "stream",
+                "state": state,
+                "local": _fmt(lip, lport),
+                "peer": _fmt(rip, rport) if has_peer else "",
+                "lip": lip,
+                "lport": lport,
+                "rip": rip,
+                "rport": rport,
+                "listening": listening,
+            }
+        )
     return out
 
 
@@ -208,13 +230,22 @@ def parse_unix(path="/proc/net/unix"):
         # Named (has a path, incl. abstract "@...") vs unnamed get distinct
         # node types so they can be filtered independently.
         base = "unix" if p else "unix-unnamed"
-        out.append({
-            "inode": inode, "family": "unix", "base": base,
-            "kind": kinds.get(typ, "stream"),
-            "state": "CONNECTED" if st == 0x03 else "UNCONNECTED",
-            "local": p, "peer": "", "lip": "", "lport": 0, "rip": "", "rport": 0,
-            "listening": bool(flags & 0x10000),  # SO_ACCEPTCON
-        })
+        out.append(
+            {
+                "inode": inode,
+                "family": "unix",
+                "base": base,
+                "kind": kinds.get(typ, "stream"),
+                "state": "CONNECTED" if st == 0x03 else "UNCONNECTED",
+                "local": p,
+                "peer": "",
+                "lip": "",
+                "lport": 0,
+                "rip": "",
+                "rport": 0,
+                "listening": bool(flags & 0x10000),  # SO_ACCEPTCON
+            }
+        )
     return out
 
 
@@ -252,7 +283,7 @@ def map_inode_pids(pids):
             except (PermissionError, FileNotFoundError, ProcessLookupError, OSError):
                 continue
             if target.startswith("socket:["):
-                ino = target[len("socket:["):-1]
+                ino = target[len("socket:[") : -1]
                 inode2pids.setdefault(ino, set()).add(pid)
     return inode2pids
 
@@ -261,7 +292,7 @@ def map_inode_pids(pids):
 # A4. Build the graph model
 # ---------------------------------------------------------------------------
 def _short(s, n=42):
-    return s if len(s) <= n else s[:n - 1] + "…"
+    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def proc_label(p):
@@ -269,16 +300,22 @@ def proc_label(p):
 
 
 def proc_full(p, nsock):
-    return ("%s\ncmd: %s\nuser: %s (uid %d)   ppid: %d\nstate: %s   sockets: %d"
-            % (p["comm"], _short(p["cmdline"], 200), p["user"], p["uid"],
-               p["ppid"], p["state"], nsock))
+    return "%s\ncmd: %s\nuser: %s (uid %d)   ppid: %d\nstate: %s   sockets: %d" % (
+        p["comm"],
+        _short(p["cmdline"], 200),
+        p["user"],
+        p["uid"],
+        p["ppid"],
+        p["state"],
+        nsock,
+    )
 
 
 def sock_label(s):
     if s["family"] == "unix":
         path = s["local"]
         if not path:
-            return "unix:%s" % s["kind"]   # unnamed
+            return "unix:%s" % s["kind"]  # unnamed
         if path.startswith("@"):
             return "@" + os.path.basename(path[1:] or path)
         return _short(os.path.basename(path) or path, 28)
@@ -289,9 +326,15 @@ def sock_label(s):
 
 def sock_full(s, pids):
     owners = ",".join(str(p) for p in sorted(pids)) if pids else "(none)"
-    return ("%s/%s\nlocal: %s\npeer:  %s\nstate: %s   inode: %s\nowners: %s"
-            % (s["family"], s["kind"], s["local"] or "(unnamed)",
-               s["peer"] or "-", s["state"], s["inode"], owners))
+    return "%s/%s\nlocal: %s\npeer:  %s\nstate: %s   inode: %s\nowners: %s" % (
+        s["family"],
+        s["kind"],
+        s["local"] or "(unnamed)",
+        s["peer"] or "-",
+        s["state"],
+        s["inode"],
+        owners,
+    )
 
 
 def build_graph(procs, socks, inode2pids, is_root, ignore=None):
@@ -303,8 +346,15 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None):
         if ntype in ignore or nid in node_ids:
             return
         node_ids.add(nid)
-        nodes.append({"id": nid, "label": label, "full": full,
-                      "type": ntype, "listen": bool(listen)})
+        nodes.append(
+            {
+                "id": nid,
+                "label": label,
+                "full": full,
+                "type": ntype,
+                "listen": bool(listen),
+            }
+        )
 
     # processes
     for pid, p in procs.items():
@@ -321,8 +371,13 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None):
     local_index = {}  # (ip,port) -> inode, for loopback peer matching (tcp)
     for s in socks:
         pids = inode2pids.get(s["inode"], set())
-        add_node("s:%s" % s["inode"], sock_label(s), sock_full(s, pids),
-                 s["base"], listen=s["listening"])
+        add_node(
+            "s:%s" % s["inode"],
+            sock_label(s),
+            sock_full(s, pids),
+            s["base"],
+            listen=s["listening"],
+        )
         if s["base"] == "tcp" and s["lport"]:
             local_index.setdefault((s["lip"], s["lport"]), s["inode"])
 
@@ -330,15 +385,29 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None):
     for pid, p in procs.items():
         ppid = p["ppid"]
         if ppid and ppid in procs and ppid != pid:
-            edges.append({"source": "p:%d" % ppid, "target": "p:%d" % pid,
-                          "label": "parent of", "cls": "tree", "dir": True})
+            edges.append(
+                {
+                    "source": "p:%d" % ppid,
+                    "target": "p:%d" % pid,
+                    "label": "parent of",
+                    "cls": "tree",
+                    "dir": True,
+                }
+            )
 
     # io edges: process -> socket
     for s in socks:
         sid = "s:%s" % s["inode"]
         for pid in inode2pids.get(s["inode"], ()):
-            edges.append({"source": "p:%d" % pid, "target": sid,
-                          "label": _io_label(s), "cls": "io", "dir": True})
+            edges.append(
+                {
+                    "source": "p:%d" % pid,
+                    "target": sid,
+                    "label": _io_label(s),
+                    "cls": "io",
+                    "dir": True,
+                }
+            )
 
     # io edges: socket -> remote (or peer for loopback tcp)
     peer_seen = set()
@@ -355,25 +424,45 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None):
             pair = tuple(sorted((s["inode"], peer_inode)))
             if pair not in peer_seen:
                 peer_seen.add(pair)
-                edges.append({"source": sid, "target": "s:%s" % peer_inode,
-                              "label": "peer", "cls": "io", "dir": True})
+                edges.append(
+                    {
+                        "source": sid,
+                        "target": "s:%s" % peer_inode,
+                        "label": "peer",
+                        "cls": "io",
+                        "dir": True,
+                    }
+                )
         else:
             rid = "r:%s" % s["peer"]
-            add_node(rid, _short(s["peer"], 30), "remote endpoint\n%s" % s["peer"],
-                     "remote")
-            edges.append({"source": sid, "target": rid,
-                          "label": "connects", "cls": "io", "dir": True})
+            add_node(
+                rid, _short(s["peer"], 30), "remote endpoint\n%s" % s["peer"], "remote"
+            )
+            edges.append(
+                {
+                    "source": sid,
+                    "target": rid,
+                    "label": "connects",
+                    "cls": "io",
+                    "dir": True,
+                }
+            )
 
     # drop edges whose endpoints aren't both present
-    edges = [e for e in edges
-             if e["source"] in node_ids and e["target"] in node_ids]
+    edges = [e for e in edges if e["source"] in node_ids and e["target"] in node_ids]
 
     # unattributed sockets (real inode, no owning pid), among kept socket types
-    unattributed = sum(1 for s in socks
-                       if s["base"] not in ignore and not inode2pids.get(s["inode"]))
+    unattributed = sum(
+        1 for s in socks if s["base"] not in ignore and not inode2pids.get(s["inode"])
+    )
 
-    counts = {"nodes": len(nodes), "edges": len(edges),
-              "by_type": {}, "by_class": {}, "unattributed": unattributed}
+    counts = {
+        "nodes": len(nodes),
+        "edges": len(edges),
+        "by_type": {},
+        "by_class": {},
+        "unattributed": unattributed,
+    }
     for n in nodes:
         counts["by_type"][n["type"]] = counts["by_type"].get(n["type"], 0) + 1
     for e in edges:
@@ -383,7 +472,9 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None):
     meta = {
         "host": socket.gethostname(),
         "captured": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "root": is_root, "ignored": sorted(ignore), "counts": counts,
+        "root": is_root,
+        "ignored": sorted(ignore),
+        "counts": counts,
     }
     return {"meta": meta, "types": types, "nodes": nodes, "edges": edges}, unattributed
 
@@ -428,25 +519,63 @@ def emit_html(model):
 def main():
     type_ids = [t["id"] for t in TYPES]
     ap = argparse.ArgumentParser(
-        description="Linux socket & process graph explorer",
+        prog="socketscope",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="node type ids (for --ignore): " + ", ".join(type_ids))
-    ap.add_argument("-o", "--out", default="sockets.html",
-                    help="output HTML path (default: sockets.html)")
-    ap.add_argument("--ignore", action="append", default=[], metavar="TYPE",
-                    help="exclude node type(s) from the graph; repeatable or "
-                         "comma-separated (e.g. --ignore unix-unnamed,udp)")
-    # Per-type convenience flags (the common, noisy ones).
-    ap.add_argument("--ignore-uds", action="store_true",
-                    help="exclude ALL UNIX domain sockets (named + unnamed)")
-    ap.add_argument("--ignore-uds-unnamed", action="store_true",
-                    help="exclude only UNNAMED UNIX domain sockets (the noisy ones)")
-    ap.add_argument("--ignore-tcp", action="store_true", help="exclude TCP sockets")
-    ap.add_argument("--ignore-udp", action="store_true", help="exclude UDP sockets")
-    ap.add_argument("--ignore-remote", action="store_true",
-                    help="exclude remote (foreign) endpoints")
-    ap.add_argument("--ignore-kernel", action="store_true",
-                    help="exclude kernel threads")
+        description=(
+            "Snapshot every open socket and the processes using them, straight\n"
+            "from /proc, and write a single self-contained, offline, interactive\n"
+            "HTML graph for exploring them. Stdlib only; nothing to install."
+        ),
+        epilog=(
+            "examples:\n"
+            "  sudo socketscope.py                  full visibility, writes sockets.html\n"
+            "  socketscope.py -o net.html           unprivileged (your processes only)\n"
+            "  sudo socketscope.py --ignore-uds     drop UNIX-domain sockets (less noise)\n"
+            "  sudo socketscope.py --ignore unix-unnamed,udp\n"
+            "\n"
+            "Run as root (sudo) to attribute system-owned sockets to their processes.\n"
+            "The legend in the viewer can also show/hide types after the fact; --ignore\n"
+            "drops them from the data entirely.\n"
+            "\n"
+            "node type ids (for --ignore): " + ", ".join(type_ids)
+        ),
+    )
+    ap.add_argument(
+        "-o",
+        "--out",
+        default="sockets.html",
+        metavar="FILE",
+        help="output HTML path (default: sockets.html)",
+    )
+    g = ap.add_argument_group("filtering (exclude node types from the graph)")
+    g.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        metavar="TYPE",
+        help="exclude type(s); repeatable or comma-separated, "
+        "e.g. --ignore unix-unnamed,udp",
+    )
+    g.add_argument(
+        "--ignore-uds",
+        action="store_true",
+        help="exclude all UNIX-domain sockets (named + unnamed)",
+    )
+    g.add_argument(
+        "--ignore-uds-unnamed",
+        action="store_true",
+        help="exclude only unnamed UNIX-domain sockets (the noisy ones)",
+    )
+    g.add_argument("--ignore-tcp", action="store_true", help="exclude TCP sockets")
+    g.add_argument("--ignore-udp", action="store_true", help="exclude UDP sockets")
+    g.add_argument(
+        "--ignore-remote",
+        action="store_true",
+        help="exclude remote (foreign) endpoints",
+    )
+    g.add_argument(
+        "--ignore-kernel", action="store_true", help="exclude kernel threads"
+    )
     args = ap.parse_args()
 
     # Resolve the set of node-type ids to drop.
@@ -467,10 +596,12 @@ def main():
         ignore.add("proc-kernel")
     unknown = ignore - set(type_ids)
     if unknown:
-        ap.error("unknown type id(s): %s\nvalid ids: %s"
-                 % (", ".join(sorted(unknown)), ", ".join(type_ids)))
+        ap.error(
+            "unknown type id(s): %s\nvalid ids: %s"
+            % (", ".join(sorted(unknown)), ", ".join(type_ids))
+        )
 
-    is_root = (os.geteuid() == 0)
+    is_root = os.geteuid() == 0
     procs = read_processes()
     socks = read_sockets()
     inode2pids = map_inode_pids(list(procs.keys()))
@@ -481,11 +612,13 @@ def main():
         fh.write(html_out)
 
     c = model["meta"]["counts"]
-    print("Linux socket & process graph  -  point-in-time snapshot")
+    print("socketscope  -  Linux socket & process graph  -  point-in-time snapshot")
     print("  host:      %s" % model["meta"]["host"])
     print("  captured:  %s" % model["meta"]["captured"])
-    print("  privilege: %s" % ("root (full visibility)" if is_root
-                               else "unprivileged (own processes only)"))
+    print(
+        "  privilege: %s"
+        % ("root (full visibility)" if is_root else "unprivileged (own processes only)")
+    )
     if ignore:
         print("  ignored types: %s" % ", ".join(sorted(ignore)))
     print("  nodes: %d   edges: %d" % (c["nodes"], c["edges"]))
@@ -504,7 +637,7 @@ def main():
     print("  (snapshot only - re-run to refresh.)")
 
 
-HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Linux sockets - explorer</title>
+HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>socketscope — Linux socket &amp; process graph</title>
 <style>
  html,body{margin:0;height:100%;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#fbfbfd;color:#222}
  #wrap{display:flex;height:100vh}#net{flex:1;background:#fbfbfd}
@@ -547,6 +680,9 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
   <h2>Types - click to filter</h2><div id="legend"></div>
   <h2>Edge style</h2>
   <div class="key">&#8594; arrowhead = direction<br>colored arc = I/O relationship<br>grey italic = process tree</div>
+  <h2>Export</h2>
+  <button id="dljson">&#x2913; Download data (JSON)</button>
+  <div class="key">the captured graph model (nodes, edges, meta)</div>
 </div></div>
 <script>__CYTO_JS__</script>
 <script id="graph-data" type="application/json">__DATA__</script>
@@ -745,6 +881,13 @@ const al=()=>cy.batch(()=>cy.edges().forEach(x=>{
   const on=elbl.checked&&(x.hasClass("tree")?tlbl.checked:true);x.toggleClass("showlabel",on);}));
 elbl.onchange=al;tlbl.onchange=al;al();
 document.getElementById("host").textContent=META.host+"  ·  "+META.captured+(META.root?"  ·  root":"  ·  unprivileged");
+// Download the embedded graph model as a JSON file (fully offline: builds a
+// blob from the data already in the page, no network).
+document.getElementById("dljson").onclick=()=>{
+  const blob=new Blob([JSON.stringify(DATA,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob),a=document.createElement("a");
+  a.href=url;a.download="socketscope-"+(META.host||"snapshot")+".json";
+  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),0);};
 const countEl=document.getElementById("count");
 function updateCount(){const vis=NODES.reduce((a,n)=>a+(hide.has(n.type)?0:1),0);
   countEl.textContent=(vis<NODES.length?vis+" of "+NODES.length:NODES.length)+" nodes · "+EDGES.length+" edges";}
