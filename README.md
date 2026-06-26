@@ -50,6 +50,19 @@ It's a **snapshot** — re-run it any time to refresh.
 
 By default socketscope writes one file, **`socketscope-<timestamp>.html`**, so repeated runs don't overwrite each other. `-o NAME` sets the base name and the `.html`/`.json` extension is appended for you (a name you type *with* an extension is accepted too). Add **`--json`** to also write the raw graph model as `<base>.json`, **`--no-html`** to skip the viewer, and **`-o -`** to stream a single artifact to stdout — so `socketscope.py --json --no-html -o - | jq` works for scripting. The human-readable capture summary always goes to **stderr**, keeping stdout clean for piping. The JSON is the same `{meta, types, nodes, edges}` model the viewer's "Download data" button produces.
 
+### Rendering a saved snapshot
+
+socketscope is really two steps — **snapshot** the system into a JSON model, then **render** that model into HTML — and the default run does both. The **`render`** subcommand runs just the second step: it turns a saved snapshot JSON back into the HTML viewer **without polling the system at all**. Use it to re-view an archived capture, render a snapshot taken on another host, or rebuild the HTML from a capture piped in.
+
+```bash
+socketscope.py render snap.json                 # -> HTML on stdout
+socketscope.py render snap.json -o view         # -> view.html
+socketscope.py render snap.json > view.html     # same, via redirect
+socketscope.py --json --no-html -o - | socketscope.py render   # capture | render
+```
+
+`render` is a plain filter: it reads the snapshot from a **file argument** or, if omitted (or given `-`), from **stdin**, and writes HTML to **stdout** unless you pass `-o NAME` (→ `NAME.html`). It polls nothing, so it needs no privileges; the rendered HTML reflects the snapshot's *original* host and capture time. Because the model fully determines the output, `render` of a capture's `.json` reproduces that capture's `.html` exactly.
+
 ### Filtering at capture time
 
 `--ignore` drops node types from the data entirely (smaller file, less clutter). You can also just hide/show types live in the viewer's legend after the fact. Type ids: `proc-root`, `proc-user`, `proc-kernel`, `tcp`, `udp`, `unix`, `unix-unnamed`, `remote`. Run `socketscope.py --help` for the convenience flags (`--ignore-uds`, `--ignore-kernel`, …).

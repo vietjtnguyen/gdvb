@@ -515,6 +515,179 @@ def emit_html(model):
 
 
 # ---------------------------------------------------------------------------
+# output helpers (shared by capture + render)
+# ---------------------------------------------------------------------------
+def resolve_out(out_arg):
+    """Map an -o value to (base, to_stdout): '-' -> stdout; otherwise strip a
+    typed .html/.json so '-o foo.html' and '-o foo' behave the same."""
+    if out_arg == "-":
+        return None, True
+    base = out_arg
+    for ext in (".html", ".json"):
+        if base.lower().endswith(ext):
+            base = base[: -len(ext)]
+            break
+    return base, False
+
+
+def emit_output(text, base, ext, to_stdout):
+    """Write text to base+ext, or stdout. Returns the path written, or None."""
+    if to_stdout:
+        sys.stdout.write(text)
+        return None
+    path = base + ext
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    return path
+
+
+def print_summary(model, wrote, rerendered_from=None):
+    """Capture/render summary -> stderr (keeps stdout clean for piped data).
+    Reads everything from model['meta'], so it works for a freshly captured
+    model or one loaded from a saved snapshot."""
+    meta = model["meta"]
+    c = meta.get("counts", {})
+    is_root = bool(meta.get("root"))
+
+    def log(msg=""):
+        print(msg, file=sys.stderr)
+
+    log("socketscope  -  Linux socket & process graph  -  point-in-time snapshot")
+    log("  host:      %s" % meta.get("host", "?"))
+    log("  captured:  %s" % meta.get("captured", "?"))
+    log(
+        "  privilege: %s"
+        % ("root (full visibility)" if is_root else "unprivileged (own processes only)")
+    )
+    if meta.get("ignored"):
+        log("  ignored types: %s" % ", ".join(meta["ignored"]))
+    log("  nodes: %d   edges: %d" % (c.get("nodes", 0), c.get("edges", 0)))
+    log("  nodes by type:")
+    for t in TYPES:
+        if c.get("by_type", {}).get(t["id"]):
+            log("      %-12s %d" % (t["id"], c["by_type"][t["id"]]))
+    log("  edges by class:")
+    for cls in ("tree", "io"):
+        if c.get("by_class", {}).get(cls):
+            log("      %-12s %d" % (cls, c["by_class"][cls]))
+    unattr = c.get("unattributed", 0)
+    log("  sockets not attributed to a process: %d" % unattr)
+    if rerendered_from is not None:
+        log("  re-rendered from %s (no system polled)" % rerendered_from)
+    elif unattr > 0 and not is_root:
+        log("  hint: re-run with 'sudo' to attribute system-owned sockets.")
+    for w in wrote:
+        log("  wrote: %s" % w)
+    log("  (snapshot only - re-run to refresh.)")
+
+
+# ---------------------------------------------------------------------------
+# capture (default): /proc -> model -> html [+ json]
+# ---------------------------------------------------------------------------
+def do_capture(args, ap):
+    type_ids = [t["id"] for t in TYPES]
+
+    # Resolve the set of node-type ids to drop.
+    ignore = set()
+    for item in args.ignore:
+        ignore.update(x.strip() for x in item.split(",") if x.strip())
+    if args.ignore_uds:
+        ignore.update({"unix", "unix-unnamed"})
+    if args.ignore_uds_unnamed:
+        ignore.add("unix-unnamed")
+    if args.ignore_tcp:
+        ignore.add("tcp")
+    if args.ignore_udp:
+        ignore.add("udp")
+    if args.ignore_remote:
+        ignore.add("remote")
+    if args.ignore_kernel:
+        ignore.add("proc-kernel")
+    unknown = ignore - set(type_ids)
+    if unknown:
+        ap.error(
+            "unknown type id(s): %s\nvalid ids: %s"
+            % (", ".join(sorted(unknown)), ", ".join(type_ids))
+        )
+
+    is_root = os.geteuid() == 0
+    now = datetime.datetime.now().astimezone()
+
+    # Resolve output base + artifacts (fail fast, before scanning /proc). Default
+    # base is a timestamp so snapshots don't overwrite each other.
+    if args.out is None:
+        base, to_stdout = "socketscope-" + now.strftime("%Y-%m-%d-%H-%M-%S"), False
+    else:
+        base, to_stdout = resolve_out(args.out)
+    write_html = not args.no_html
+    write_json = args.json
+    if not write_html and not write_json:
+        ap.error("nothing to write: --no-html given without --json")
+    if to_stdout and write_html and write_json:
+        ap.error(
+            "cannot write both HTML and JSON to stdout (-o -); "
+            "add --no-html for JSON, or drop --json for HTML"
+        )
+
+    procs = read_processes()
+    socks = read_sockets()
+    inode2pids = map_inode_pids(list(procs.keys()))
+    model, _ = build_graph(procs, socks, inode2pids, is_root, ignore, now)
+
+    wrote = []
+    if write_html:
+        p = emit_output(emit_html(model), base, ".html", to_stdout)
+        wrote.append(os.path.abspath(p) if p else "<stdout>")
+    if write_json:
+        p = emit_output(
+            json.dumps(model, ensure_ascii=False, indent=2) + "\n",
+            base,
+            ".json",
+            to_stdout,
+        )
+        wrote.append(os.path.abspath(p) if p else "<stdout>")
+    print_summary(model, wrote)
+
+
+# ---------------------------------------------------------------------------
+# render: existing snapshot JSON -> html (polls nothing)
+# ---------------------------------------------------------------------------
+def do_render(args, ap):
+    src = args.input
+    src_label = "<stdin>" if src == "-" else src
+    try:
+        if src == "-":
+            model = json.load(sys.stdin)
+        else:
+            with open(src, encoding="utf-8") as fh:
+                model = json.load(fh)
+    except OSError as e:
+        ap.error("cannot read snapshot %s: %s" % (src_label, e))
+    except json.JSONDecodeError as e:
+        ap.error("%s is not valid JSON: %s" % (src_label, e))
+
+    if not isinstance(model, dict) or not all(
+        k in model for k in ("meta", "types", "nodes", "edges")
+    ):
+        ap.error(
+            "%s is not a socketscope snapshot "
+            "(need a JSON object with meta/types/nodes/edges)" % src_label
+        )
+
+    # render is a filter: HTML to stdout by default, -o to save to a file.
+    if args.out is None:
+        base, to_stdout = None, True
+    else:
+        base, to_stdout = resolve_out(args.out)
+    p = emit_output(emit_html(model), base, ".html", to_stdout)
+    print_summary(
+        model,
+        [os.path.abspath(p) if p else "<stdout>"],
+        rerendered_from=src_label,
+    )
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 def main():
@@ -533,6 +706,10 @@ def main():
             "  sudo socketscope.py --json           also write socketscope-<ts>.json\n"
             "  sudo socketscope.py --json --no-html -o - | jq .   stream JSON to a pipe\n"
             "  socketscope.py --ignore-uds -o net   unprivileged -> net.html (less noise)\n"
+            "  socketscope.py render snap.json > view.html   re-render a saved snapshot\n"
+            "\n"
+            "Two modes: the default captures from /proc; the 'render' subcommand rebuilds\n"
+            "the HTML from a saved snapshot JSON without polling the system (render -h).\n"
             "\n"
             "Output is a point-in-time snapshot; the base name defaults to a timestamp\n"
             "(socketscope-YYYY-MM-DD-HH-MM-SS) so runs don't overwrite each other. The\n"
@@ -593,110 +770,36 @@ def main():
     g.add_argument(
         "--ignore-kernel", action="store_true", help="exclude kernel threads"
     )
-    args = ap.parse_args()
-
-    # Resolve the set of node-type ids to drop.
-    ignore = set()
-    for item in args.ignore:
-        ignore.update(x.strip() for x in item.split(",") if x.strip())
-    if args.ignore_uds:
-        ignore.update({"unix", "unix-unnamed"})
-    if args.ignore_uds_unnamed:
-        ignore.add("unix-unnamed")
-    if args.ignore_tcp:
-        ignore.add("tcp")
-    if args.ignore_udp:
-        ignore.add("udp")
-    if args.ignore_remote:
-        ignore.add("remote")
-    if args.ignore_kernel:
-        ignore.add("proc-kernel")
-    unknown = ignore - set(type_ids)
-    if unknown:
-        ap.error(
-            "unknown type id(s): %s\nvalid ids: %s"
-            % (", ".join(sorted(unknown)), ", ".join(type_ids))
-        )
-
-    is_root = os.geteuid() == 0
-
-    # Resolve the output base name and which artifacts to write (fail fast,
-    # before scanning /proc). Default base is a timestamp so snapshots don't
-    # overwrite each other; the .html/.json extension is appended below.
-    now = datetime.datetime.now().astimezone()
-    base = args.out
-    if base is None:
-        base = "socketscope-" + now.strftime("%Y-%m-%d-%H-%M-%S")
-    elif base != "-":
-        for ext in (".html", ".json"):  # forgive an explicitly-typed extension
-            if base.lower().endswith(ext):
-                base = base[: -len(ext)]
-                break
-    write_html = not args.no_html
-    write_json = args.json
-    if not write_html and not write_json:
-        ap.error("nothing to write: --no-html given without --json")
-    to_stdout = base == "-"
-    if to_stdout and write_html and write_json:
-        ap.error("cannot write both HTML and JSON to stdout; pick one")
-
-    procs = read_processes()
-    socks = read_sockets()
-    inode2pids = map_inode_pids(list(procs.keys()))
-    model, unattributed = build_graph(procs, socks, inode2pids, is_root, ignore, now)
-
-    wrote = []
-    if write_html:
-        html_out = emit_html(model)
-        if to_stdout:
-            sys.stdout.write(html_out)
-        else:
-            path = base + ".html"
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(html_out)
-            wrote.append(path)
-    if write_json:
-        json_out = json.dumps(model, ensure_ascii=False, indent=2)
-        if to_stdout:
-            sys.stdout.write(json_out + "\n")
-        else:
-            path = base + ".json"
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(json_out + "\n")
-            wrote.append(path)
-
-    # Human-readable summary -> stderr, so stdout stays clean for piped data.
-    def log(msg=""):
-        print(msg, file=sys.stderr)
-
-    c = model["meta"]["counts"]
-    log("socketscope  -  Linux socket & process graph  -  point-in-time snapshot")
-    log("  host:      %s" % model["meta"]["host"])
-    log("  captured:  %s" % model["meta"]["captured"])
-    log(
-        "  privilege: %s"
-        % ("root (full visibility)" if is_root else "unprivileged (own processes only)")
+    sub = ap.add_subparsers(dest="command")
+    rp = sub.add_parser(
+        "render",
+        help="render a saved snapshot JSON into HTML (no system polling)",
+        description=(
+            "Read a snapshot JSON (a file, or stdin) and write the interactive "
+            "HTML viewer to stdout. Polls nothing; the HTML reflects the "
+            "snapshot's original capture. Use -o to save to a file instead."
+        ),
     )
-    if ignore:
-        log("  ignored types: %s" % ", ".join(sorted(ignore)))
-    log("  nodes: %d   edges: %d" % (c["nodes"], c["edges"]))
-    log("  nodes by type:")
-    for t in TYPES:
-        if c["by_type"].get(t["id"]):
-            log("      %-12s %d" % (t["id"], c["by_type"][t["id"]]))
-    log("  edges by class:")
-    for cls in ("tree", "io"):
-        if c["by_class"].get(cls):
-            log("      %-12s %d" % (cls, c["by_class"][cls]))
-    log("  sockets not attributed to a process: %d" % unattributed)
-    if unattributed > 0 and not is_root:
-        log("  hint: re-run with 'sudo' to attribute system-owned sockets.")
-    if to_stdout:
-        log("  wrote: <stdout>")
+    rp.add_argument(
+        "input",
+        nargs="?",
+        default="-",
+        metavar="SNAPSHOT",
+        help="snapshot JSON path; omit or '-' to read stdin",
+    )
+    rp.add_argument(
+        "-o",
+        "--out",
+        default=None,
+        metavar="NAME",
+        help="write HTML to NAME.html instead of stdout ('-' = stdout)",
+    )
+
+    args = ap.parse_args()
+    if args.command == "render":
+        do_render(args, ap)
     else:
-        for p in wrote:
-            log("  wrote: %s" % os.path.abspath(p))
-    log("  (snapshot only - re-run to refresh.)")
+        do_capture(args, ap)
 
 
 HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>socketscope — Linux socket &amp; process graph</title>
