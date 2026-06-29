@@ -1496,10 +1496,15 @@ const REP_CUT=2*SPR_L, REP_CUT2=REP_CUT*REP_CUT;
 // lengths (which were near-equal); W_BASE keeps non-emphasized leaves reeled in.
 const SPR_E=.5*SPR_L, K_SPRING=.05, W_BASE=.2;
 const RING=.55*SPR_L, RAD_K=.05;
-const els=NODES.map(n=>({data:{id:n.id,label:n.label||n.id,full:n.full||n.label||n.id,type:n.type,
-    listen:n.listen?"yes":"no",tip:(n.full||n.label||n.id||"")+(n.type?"\n\n["+n.type+"]":"")}}))
- .concat(EDGES.map((e,i)=>({data:{id:"e"+i,source:e.source,target:e.target,label:e.label,cls:e.cls,
-    col:COL[(NODES.find(n=>n.id===e.source)||{}).type]||"#9aa0a6",tip:e.label||""},classes:e.cls})));
+// Every scalar node/edge field is copied into the element data, so DATA.style /
+// traversal / search selectors can key on ANY field a generator emits (exec,
+// size, listen, ...) - the viewer hardcodes nothing domain-specific. Booleans
+// become "yes"/"no" so predicate selectors like [exec = "yes"] work uniformly.
+const norm=o=>{const d={};for(const k in o)d[k]=o[k]===true?"yes":o[k]===false?"no":o[k];return d;};
+const els=NODES.map(n=>({data:Object.assign(norm(n),{id:n.id,label:n.label||n.id,
+    full:n.full||n.label||n.id,tip:(n.full||n.label||n.id||"")+(n.type?"\n\n["+n.type+"]":"")})}))
+ .concat(EDGES.map((e,i)=>({data:Object.assign(norm(e),{id:"e"+i,source:e.source,target:e.target,
+    col:COL[(NODES.find(n=>n.id===e.source)||{}).type]||"#9aa0a6",tip:e.label||""}),classes:e.cls})));
 // Styling is layered, applied in order:
 //  1) BASE_STYLE - baked here, DOMAIN-AGNOSTIC: structure only (shape, labels,
 //     sizing, arcs, arrows, neutral greys). No type colors, no socketscope-specific
