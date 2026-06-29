@@ -1496,6 +1496,9 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
     <input type="range" id="strength" min="0" max="100" value="45" style="width:100%"></div>
   <div id="status">&#9679; settling&hellip;</div>
   <div class="row"><input type="checkbox" id="elabels" checked><label for="elabels">show edge labels</label></div>
+  <h2>Static layout</h2>
+  <button id="topobfs">&#x2192; Topo BFS</button>
+  <div class="key">left&rarr;right BFS layers from the directed roots of the selection (all visible if none). Freezes motion; drag nodes or Resume to edit.</div>
   <h2>Select</h2>
   <button id="sel-all">All</button><button id="sel-none">None</button><button id="sel-invert">Invert</button>
   <button id="sel-grow">Grow</button><button id="sel-shrink">Shrink</button><button id="sel-walk">Walk</button><button id="sel-comp">Component</button>
@@ -1794,6 +1797,39 @@ pauseBtn.onclick=()=>{paused=!paused;
   if(paused){running=false;pauseBtn.classList.add("on");pauseBtn.textContent="▶ Resume motion";if(status)status.textContent="⏸ paused";}
   else{pauseBtn.classList.remove("on");pauseBtn.textContent="⏸ Pause motion";if(!running){running=true;requestAnimationFrame(tick);}}};
 document.getElementById("jiggle").onclick=()=>reheat(JIGGLE);
+// Static "Topo BFS" layout: lay the selection (or all visible nodes) out left->
+// right in BFS layers from the directed roots (in-degree 0 within the selection).
+// Not a strict DAG: cycles/disconnected pieces are handled by seeding remaining
+// nodes lowest-in-degree-first, so every node lands in some layer. Applying it
+// freezes motion (else the force sim would immediately undo it).
+function topoBFS(){
+  const sel=curSel();
+  const S=sel.length?sel:NODES.filter(n=>nodeVisible(n.id)).map(n=>n.id);
+  if(!S.length)return;
+  const inS=new Set(S),out={},indeg={};
+  S.forEach(id=>{out[id]=[];indeg[id]=0;});
+  S.forEach(id=>(INC[id]||[]).forEach(x=>{
+    if(x.s===id&&x.t!==id&&inS.has(x.t))out[id].push(x.t);
+    if(x.t===id&&x.s!==id&&inS.has(x.s))indeg[id]++;}));
+  // Seed in-degree order: real roots (0) first, then lowest-in-degree pseudo-roots
+  // for cyclic / unreachable components. Each unvisited seed BFSes its reach.
+  const layer={},q=[];
+  S.slice().sort((a,b)=>indeg[a]-indeg[b]).forEach(r=>{if(layer[r]!==undefined)return;
+    layer[r]=0;q.push(r);
+    while(q.length){const u=q.shift();
+      out[u].forEach(w=>{if(layer[w]===undefined){layer[w]=layer[u]+1;q.push(w);}});}});
+  // Columns by layer; size gaps to the biggest node so nothing overlaps.
+  let maxW=40,maxH=22;S.forEach(id=>{const s=sz[id];if(s){if(s.w>maxW)maxW=s.w;if(s.h>maxH)maxH=s.h;}});
+  const XG=maxW+90,YG=maxH+22,byL={};
+  S.forEach(id=>{const L=layer[id]||0;(byL[L]=byL[L]||[]).push(id);});
+  cy.batch(()=>Object.keys(byL).forEach(L=>{const arr=byL[L];
+    arr.forEach((id,i)=>{cy.getElementById(id).position({x:L*XG,y:(i-(arr.length-1)/2)*YG});
+      if(vel[id])vel[id]={vx:0,vy:0};});}));
+  // Freeze: a static layout must stop the sim, reflected in the pause toggle.
+  paused=true;running=false;pauseBtn.classList.add("on");pauseBtn.textContent="▶ Resume motion";
+  if(status)status.textContent="⏸ static · topo BFS";
+  framed=true;cy.fit(N.filter(n=>inS.has(n.id())),40);}
+document.getElementById("topobfs").onclick=topoBFS;
 document.getElementById("fit").onclick=()=>cy.fit(undefined,30);
 const fsel=document.getElementById("fstruct"),str=document.getElementById("strength");
 FS.forEach(m=>{const o=document.createElement("option");o.value=m.id;o.textContent=m.label;fsel.append(o);});
