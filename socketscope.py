@@ -988,17 +988,20 @@ const INTERACTION_STYLE=[
   {selector:"node.pinned",style:{"border-style":"dashed","border-width":3,"border-color":"#c77800",
     "underlay-color":"#e0a800","underlay-opacity":.2,"underlay-padding":4}},
   {selector:"node:selected",style:{"border-color":"#1f6feb","border-width":4}},
-  {selector:"edge.chain",style:{"line-color":"#1f6feb","target-arrow-color":"#1f6feb","width":2.4,"opacity":1}},
   {selector:"node.faded",style:{"background-opacity":.12,"border-opacity":.18,"text-opacity":.7,"color":"#444"}},
   {selector:"edge.faded",style:{"opacity":.07,"text-opacity":0}}];
 const cy=cytoscape({container:document.getElementById("net"),elements:els,wheelSensitivity:.25,layout:{name:"preset"},
   style:BASE_STYLE.concat(TYPE_STYLE).concat(DATA.style||[]).concat(INTERACTION_STYLE)});
+// Selection is node-only: edges are never selectable (a click/box-select never
+// touches them and a drag pans straight through a hairball). Events stay on, so
+// hover tooltips below still work; nodes remain selectable + grabbable.
+cy.edges().unselectify();
 
 const tip=document.getElementById("tip");
 cy.on("mouseover","node,edge",e=>{const t=e.target.data("tip");if(t){tip.textContent=t;tip.style.display="block";}});
 cy.on("mousemove","node,edge",e=>{tip.style.left=(e.originalEvent.pageX+12)+"px";tip.style.top=(e.originalEvent.pageY+12)+"px";});
 cy.on("mouseout","node,edge",()=>tip.style.display="none");
-let selectedId=null,hop=null,focus="tree",wTREE=2.6,wIO=.5,radial=false,radK=RAD_K,chainActive=false;
+let selectedId=null,hop=null,focus="tree",wTREE=2.6,wIO=.5,radial=false,radK=RAD_K;
 const pinned=new Set();  // node ids frozen in place (still exert forces, just don't move)
 const ADJ={};cy.nodes().forEach(n=>ADJ[n.id()]=[]);
 EDGES.forEach(e=>{if(ADJ[e.source]&&ADJ[e.target]){ADJ[e.source].push(e.target);ADJ[e.target].push(e.source);}});
@@ -1073,28 +1076,29 @@ cy.on("grab","node",()=>{framed=true;reheat(0);});
 // direct neighbourhood (click-to-isolate); after "trace chain" it shows exactly
 // the chain (selected nodes + the edges among them, drawn highlighted).
 let suppressSel=false,selRAF=0;
+// One uniform focus rule: un-fade the selected nodes + every edge incident to a
+// selected node (normal colour); fade everything else, including the far neighbour
+// nodes (their incident edge stays visible, pointing at the dimmed neighbour).
+// Nothing selected => nothing faded. Edges are never "selected" (see unselectify).
 function applySel(){const sel=cy.$("node:selected");
-  cy.batch(()=>{cy.elements().removeClass("faded chain");
+  cy.batch(()=>{cy.elements().removeClass("faded");
     if(sel.length===0){selectedId=null;return;}
     selectedId=sel[sel.length-1].id();
-    let show;
-    if(chainActive){const ie=sel.edgesWith(sel);ie.addClass("chain");show=sel.union(ie);}
-    else{show=sel.closedNeighborhood();}
-    cy.elements().addClass("faded");show.removeClass("faded");});}
+    const keep=sel.union(sel.connectedEdges());
+    cy.elements().addClass("faded");keep.removeClass("faded");});}
 function scheduleSel(){if(selRAF)return;selRAF=requestAnimationFrame(()=>{selRAF=0;applySel();});}
 // User-driven selection changes (tap/shift-tap/box) exit chain mode and coalesce
 // into one view update per frame, so a big box-select or background-clear doesn't
 // re-scan the graph once per node.
-cy.on("select unselect","node",()=>{if(suppressSel)return;chainActive=false;scheduleSel();});
+cy.on("select unselect","node",()=>{if(suppressSel)return;scheduleSel();});
 cy.on("tap","node",e=>{selectedId=e.target.id();if(radial){computeHop();reheat(0);}});
 const chaininfo=document.getElementById("chaininfo");
 const info=m=>{chaininfo.textContent=m;};
-// Replace the selection with an explicit id list and isolate it (chainActive=true
-// => applySel shows exactly the selection + the edges among it, rest faded).
-function setSel(ids){chainActive=true;suppressSel=true;
+// Replace the selection with an explicit id list; applySel handles the focus view.
+function setSel(ids){suppressSel=true;
   cy.batch(()=>{cy.nodes().unselect();ids.forEach(id=>{const n=cy.getElementById(id);if(n&&n.length)n.select();});});
   suppressSel=false;applySel();}
-function clearSel(){chainActive=false;suppressSel=true;cy.nodes().unselect();suppressSel=false;applySel();chaininfo.textContent="";
+function clearSel(){suppressSel=true;cy.nodes().unselect();suppressSel=false;applySel();chaininfo.textContent="";
   const se=document.getElementById("search");if(se){se.value="";}const si=document.getElementById("searchinfo");if(si)si.textContent="";}
 
 // --- Generic Select tools: topology only, operate on VISIBLE nodes via ADJ ---
@@ -1165,9 +1169,7 @@ function runSearch(){const raw=searchEl.value.trim();
   else{const toks=raw.toLowerCase().split(/\s+/);test=id=>{const s=SRCHLO[id];return toks.every(t=>s.indexOf(t)>=0);};}
   searchInfo.style.color="#1f6feb";
   const ids=[];NODES.forEach(n=>{if(!hide.has(n.type)&&test(n.id))ids.push(n.id);});
-  chainActive=true;suppressSel=true;
-  cy.batch(()=>{cy.nodes().unselect();ids.forEach(id=>{const x=cy.getElementById(id);if(x&&x.length)x.select();});});
-  suppressSel=false;applySel();
+  setSel(ids);
   searchInfo.textContent=ids.length+" match"+(ids.length===1?"":"es")+(ids.length?" · selected (Trace chain to expand)":"");
   framed=true;const sel=cy.$("node:selected");if(sel.length){cy.fit(sel,80);if(cy.zoom()>1.6)cy.zoom(1.6);}}
 let searchT=0;
