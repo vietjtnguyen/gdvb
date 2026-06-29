@@ -1490,7 +1490,7 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
     style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:6px;font:inherit">
   <div id="searchinfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
   <h2>Force layout (live)</h2>
-  <button id="pause">&#x23F8; Pause motion</button><button id="jiggle">&#x1F300; Jiggle / reset</button><button id="fit">&#x2922; Fit</button>
+  <button id="pause">&#x23F8; Pause motion</button><button id="jiggle">&#x1F300; Jiggle / reset</button>
   <div class="row"><label for="fstruct">Force&nbsp;structure&nbsp;</label><select id="fstruct"></select></div>
   <div style="margin:6px 0 2px"><div style="display:flex;justify-content:space-between;font-size:11px;color:#777"><span>weak</span><span>strong</span></div>
     <input type="range" id="strength" min="0" max="100" value="45" style="width:100%"></div>
@@ -1509,6 +1509,8 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
   <div id="traversesec"><h2>Traverse</h2><div id="traverse"></div>
     <div class="key">rule-based selection growth defined in the data</div></div>
   <div id="chaininfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
+  <h2>View</h2>
+  <button id="fit">&#x2922; Fit all</button><button id="fitsel">&#x2922; Fit selected</button>
   <div id="nodelegendsec"><h2>Node classes - click to filter</h2><div id="legend"></div></div>
   <div id="edgelegendsec"><h2>Edge classes - click to filter</h2><div id="edgelegend"></div></div>
   <div id="edgekeysec"><h2>Edge style</h2><div class="key" id="edgekey"></div></div>
@@ -1840,7 +1842,8 @@ function topoBFS(){
   if(status)status.textContent="⏸ static · topo BFS";
   framed=true;}
 document.getElementById("topobfs").onclick=topoBFS;
-document.getElementById("fit").onclick=()=>cy.fit(undefined,30);
+document.getElementById("fit").onclick=()=>{framed=true;cy.fit(undefined,30);};
+document.getElementById("fitsel").onclick=()=>{const s=cy.$("node:selected");framed=true;cy.fit(s.nonempty()?s:undefined,60);};
 const fsel=document.getElementById("fstruct"),str=document.getElementById("strength");
 FS.forEach(m=>{const o=document.createElement("option");o.value=m.id;o.textContent=m.label;fsel.append(o);});
 fsel.value=fstruct;
