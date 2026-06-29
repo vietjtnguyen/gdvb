@@ -41,12 +41,57 @@ def cyto_js():
 TYPES = [
     {"id": "proc-root", "label": "Process (root)", "color": "#E0533F"},
     {"id": "proc-user", "label": "Process (user)", "color": "#3F8EE0"},
-    {"id": "proc-kernel", "label": "Kernel thread", "color": "#9AA0A6"},
+    # `hidden`: starts unchecked in the viewer's type filter (the noisy bulk).
+    # Absent => shown. The viewer reads this, so the default is data-driven.
+    {"id": "proc-kernel", "label": "Kernel thread", "color": "#9AA0A6", "hidden": True},
     {"id": "tcp", "label": "TCP socket", "color": "#2FA86E"},
     {"id": "udp", "label": "UDP socket", "color": "#C9A227"},
-    {"id": "unix", "label": "UNIX socket (named)", "color": "#8A63D2"},
-    {"id": "unix-unnamed", "label": "UNIX socket (unnamed)", "color": "#B9A3E3"},
+    {"id": "unix", "label": "UNIX socket (named)", "color": "#8A63D2", "hidden": True},
+    {
+        "id": "unix-unnamed",
+        "label": "UNIX socket (unnamed)",
+        "color": "#B9A3E3",
+        "hidden": True,
+    },
     {"id": "remote", "label": "Remote endpoint", "color": "#D46BB0"},
+]
+
+# Domain-specific appearance, emitted as the model's `style` block. These rules
+# reference socketscope's own node/edge fields (`listen`, the `tree`/`io` edge
+# classes), which a generic directed graph won't have — so they live here in the
+# data, not in the viewer's domain-agnostic baked-in base style. A graph that
+# carries no `style` (e.g. a hand-made tree) simply skips them. The viewer layers:
+# base (generic) + per-type colors (from `types`) + this `style` + interaction.
+DOMAIN_STYLE = [
+    {
+        "selector": 'node[listen = "yes"]',
+        "style": {"border-width": 3, "border-color": "#333"},
+    },
+    {
+        "selector": "edge.io",
+        "style": {"line-color": "data(col)", "target-arrow-color": "data(col)"},
+    },
+    {
+        "selector": "edge.tree",
+        "style": {
+            "line-color": "#c3c8d0",
+            "target-arrow-color": "#c3c8d0",
+            "width": 1,
+        },
+    },
+    {
+        "selector": "edge.tree.showlabel",
+        "style": {"color": "#9aa0a6", "font-style": "italic", "font-size": 8},
+    },
+]
+
+# Human-readable key for the edge styling, emitted as the model's top-level
+# `edge_key` and shown under "Edge style" in the viewer. Domain-specific text, so
+# it lives in the data; a generic graph that omits it hides the section.
+EDGE_KEY = [
+    "→ arrowhead = direction",
+    "colored arc = I/O relationship",
+    "grey italic = process tree",
 ]
 
 TCP_STATES = {
@@ -477,7 +522,17 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
         "ignored": sorted(ignore),
         "counts": counts,
     }
-    return {"meta": meta, "types": types, "nodes": nodes, "edges": edges}, unattributed
+    return (
+        {
+            "meta": meta,
+            "types": types,
+            "style": DOMAIN_STYLE,
+            "edge_key": EDGE_KEY,
+            "nodes": nodes,
+            "edges": edges,
+        },
+        unattributed,
+    )
 
 
 def _io_label(s):
@@ -543,9 +598,9 @@ def emit_output(text, base, ext, to_stdout):
 
 def print_summary(model, wrote, rerendered_from=None):
     """Capture/render summary -> stderr (keeps stdout clean for piped data).
-    Reads everything from model['meta'], so it works for a freshly captured
-    model or one loaded from a saved snapshot."""
-    meta = model["meta"]
+    Reads from model['meta'] (tolerating its absence), so it works for a freshly
+    captured model, a saved snapshot, or a generic graph with no metadata."""
+    meta = model.get("meta", {})
     c = meta.get("counts", {})
     is_root = bool(meta.get("root"))
 
@@ -561,7 +616,13 @@ def print_summary(model, wrote, rerendered_from=None):
     )
     if meta.get("ignored"):
         log("  ignored types: %s" % ", ".join(meta["ignored"]))
-    log("  nodes: %d   edges: %d" % (c.get("nodes", 0), c.get("edges", 0)))
+    log(
+        "  nodes: %d   edges: %d"
+        % (
+            c.get("nodes", len(model.get("nodes", []))),
+            c.get("edges", len(model.get("edges", []))),
+        )
+    )
     log("  nodes by type:")
     for t in TYPES:
         if c.get("by_type", {}).get(t["id"]):
@@ -666,12 +727,14 @@ def do_render(args, ap):
     except json.JSONDecodeError as e:
         ap.error("%s is not valid JSON: %s" % (src_label, e))
 
+    # Only nodes + edges are required, so render works for any directed graph
+    # (a socketscope capture, or a hand-made one with no types/meta/style).
     if not isinstance(model, dict) or not all(
-        k in model for k in ("meta", "types", "nodes", "edges")
+        isinstance(model.get(k), list) for k in ("nodes", "edges")
     ):
         ap.error(
-            "%s is not a socketscope snapshot "
-            "(need a JSON object with meta/types/nodes/edges)" % src_label
+            "%s is not a graph (need a JSON object with `nodes` and `edges` arrays)"
+            % src_label
         )
 
     # render is a filter: HTML to stdout by default, -o to save to a file.
@@ -843,8 +906,7 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
     trace follows sockets &amp; child processes, never up to parents</div>
   <div id="chaininfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
   <h2>Types - click to filter</h2><div id="legend"></div>
-  <h2>Edge style</h2>
-  <div class="key">&#8594; arrowhead = direction<br>colored arc = I/O relationship<br>grey italic = process tree</div>
+  <div id="edgekeysec"><h2>Edge style</h2><div class="key" id="edgekey"></div></div>
   <h2>Export</h2>
   <button id="dljson">&#x2913; Download data (JSON)</button>
   <div class="key">the captured graph model (nodes, edges, meta)</div>
@@ -856,9 +918,9 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
    ({meta,types,nodes,edges}) and renders it. The collector is the only thing
    that knows about /proc, sockets, or processes. */
 const DATA=JSON.parse(document.getElementById("graph-data").textContent);
-const NODES=DATA.nodes, EDGES=DATA.edges, TYPES=DATA.types, META=DATA.meta;
+const NODES=DATA.nodes, EDGES=DATA.edges, TYPES=DATA.types||[], META=DATA.meta||{};
 const COL=Object.fromEntries(TYPES.map(t=>[t.id,t.color]));
-const SEP=4, ARC=90;
+const SEP=4;
 const STEP=.045, MAX_V=20*SEP, K_REP=6000*SEP, SPR_L=150*SEP, CONT_L=82*SEP, GRAV=.012/SEP;
 const COL_K=4, COL_PAD=20*SEP, DAMP0=.08, DAMP_MAX=.9, DAMP_RAMP=.0016, SETTLE=.2*SEP, JIGGLE=40*SEP;
 // Repulsion is local: beyond REP_CUT, node pairs don't repel. Without this the
@@ -871,27 +933,40 @@ const REP_CUT=2*SPR_L, REP_CUT2=REP_CUT*REP_CUT;
 // out at full edge length and reading as stragglers around a dense tree core.
 const IO_L=.5*SPR_L;
 const RING=.55*SPR_L, RAD_K=.05;
-const els=NODES.map(n=>({data:{id:n.id,label:n.label,full:n.full||n.label,type:n.type,col:COL[n.type]||"#bbb",
-    listen:n.listen?"yes":"no",tip:(n.full||n.label)+"\n\n["+n.type+"]"}}))
+const els=NODES.map(n=>({data:{id:n.id,label:n.label||n.id,full:n.full||n.label||n.id,type:n.type,
+    listen:n.listen?"yes":"no",tip:(n.full||n.label||n.id||"")+(n.type?"\n\n["+n.type+"]":"")}}))
  .concat(EDGES.map((e,i)=>({data:{id:"e"+i,source:e.source,target:e.target,label:e.label,cls:e.cls,
     col:COL[(NODES.find(n=>n.id===e.source)||{}).type]||"#9aa0a6",tip:e.label||""},classes:e.cls})));
-const cy=cytoscape({container:document.getElementById("net"),elements:els,wheelSensitivity:.25,layout:{name:"preset"},style:[
-  {selector:"node",style:{"shape":"round-rectangle","background-color":"data(col)","border-color":"#6b6b6b","border-width":1,
+// Styling is layered, applied in order:
+//  1) BASE_STYLE - baked here, DOMAIN-AGNOSTIC: structure only (shape, labels,
+//     sizing, arcs, arrows, neutral greys). No type colors, no socketscope-specific
+//     fields, so ANY directed graph renders as readable labelled rectangles.
+//  2) TYPE_STYLE - generated from DATA.types at runtime: one rule per type painting
+//     its color. types[] is thus the SINGLE source for both the legend swatch and
+//     the node fill, so they can't drift apart. (Empty when a graph has no types.)
+//  3) DATA.style - the snapshot's own rules. A socketscope capture prepopulates this
+//     with its domain styling (listen border, tree/io edge colors); a generic graph
+//     usually has none.
+//  4) INTERACTION_STYLE - viewer-owned (selected/chain/pinned/faded), appended last
+//     so nothing above can break selection / trace / pin / fade.
+const BASE_STYLE=[
+  {selector:"node",style:{"shape":"round-rectangle","background-color":"#e7e9ef","border-color":"#6b6b6b","border-width":1,
     "label":"data(label)","text-wrap":"wrap","text-max-width":150,"font-size":11,"color":"#1a1a1a",
     "text-valign":"center","text-halign":"center","width":"label","height":"label","padding":"7px"}},
-  {selector:'node[listen = "yes"]',style:{"border-width":3,"border-color":"#333"}},
+  {selector:"edge",style:{"curve-style":"unbundled-bezier","control-point-distances":90,"control-point-weights":.5,
+    "width":1.4,"line-color":"#9aa0a6","target-arrow-color":"#9aa0a6","target-arrow-shape":"triangle","arrow-scale":.9,"opacity":.82}},
+  {selector:"edge.showlabel",style:{"label":"data(label)","font-size":9,"color":"#555","text-rotation":"autorotate",
+    "text-background-color":"#fbfbfd","text-background-opacity":.9,"text-background-padding":"2px"}}];
+const TYPE_STYLE=TYPES.map(t=>({selector:'node[type = "'+t.id+'"]',style:{"background-color":t.color}}));
+const INTERACTION_STYLE=[
   {selector:"node.pinned",style:{"border-style":"dashed","border-width":3,"border-color":"#c77800",
     "underlay-color":"#e0a800","underlay-opacity":.2,"underlay-padding":4}},
-  {selector:"edge",style:{"curve-style":"unbundled-bezier","control-point-distances":ARC,"control-point-weights":.5,
-    "width":1.4,"line-color":"data(col)","target-arrow-color":"data(col)","target-arrow-shape":"triangle","arrow-scale":.9,"opacity":.82}},
-  {selector:'edge.tree',style:{"line-color":"#aeb3bd","target-arrow-color":"#aeb3bd","width":1}},
-  {selector:"edge.showlabel",style:{"label":"data(label)","font-size":9,"color":"#555","text-rotation":"autorotate",
-    "text-background-color":"#fbfbfd","text-background-opacity":.9,"text-background-padding":"2px"}},
-  {selector:"edge.tree.showlabel",style:{"color":"#9aa0a6","font-style":"italic","font-size":8}},
   {selector:"node:selected",style:{"border-color":"#1f6feb","border-width":4}},
   {selector:"edge.chain",style:{"line-color":"#1f6feb","target-arrow-color":"#1f6feb","width":2.4,"opacity":1}},
   {selector:"node.faded",style:{"background-opacity":.12,"border-opacity":.18,"text-opacity":.7,"color":"#444"}},
-  {selector:"edge.faded",style:{"opacity":.07,"text-opacity":0}}]});
+  {selector:"edge.faded",style:{"opacity":.07,"text-opacity":0}}];
+const cy=cytoscape({container:document.getElementById("net"),elements:els,wheelSensitivity:.25,layout:{name:"preset"},
+  style:BASE_STYLE.concat(TYPE_STYLE).concat(DATA.style||[]).concat(INTERACTION_STYLE)});
 
 const tip=document.getElementById("tip");
 cy.on("mouseover","node,edge",e=>{const t=e.target.data("tip");if(t){tip.textContent=t;tip.style.display="block";}});
@@ -1045,7 +1120,12 @@ const elbl=document.getElementById("elabels"),tlbl=document.getElementById("tlab
 const al=()=>cy.batch(()=>cy.edges().forEach(x=>{
   const on=elbl.checked&&(x.hasClass("tree")?tlbl.checked:true);x.toggleClass("showlabel",on);}));
 elbl.onchange=al;tlbl.onchange=al;al();
-document.getElementById("host").textContent=META.host+"  ·  "+META.captured+(META.root?"  ·  root":"  ·  unprivileged");
+document.getElementById("host").textContent=[META.host,META.captured,META.host?(META.root?"root":"unprivileged"):null].filter(Boolean).join("  ·  ");
+// Edge-style key is data-driven (DATA.edge_key, plain-text lines via textContent);
+// the whole section hides when a graph doesn't supply one.
+const EDGEKEY=DATA.edge_key||[],eksec=document.getElementById("edgekeysec");
+if(EDGEKEY.length){const ek=document.getElementById("edgekey");ek.style.whiteSpace="pre-line";ek.textContent=EDGEKEY.join("\n");}
+else if(eksec){eksec.style.display="none";}
 // Download the embedded graph model as a JSON file (fully offline: builds a
 // blob from the data already in the page, no network).
 document.getElementById("dljson").onclick=()=>{
@@ -1056,10 +1136,9 @@ document.getElementById("dljson").onclick=()=>{
 const countEl=document.getElementById("count");
 function updateCount(){const vis=NODES.reduce((a,n)=>a+(hide.has(n.type)?0:1),0);
   countEl.textContent=(vis<NODES.length?vis+" of "+NODES.length:NODES.length)+" nodes · "+EDGES.length+" edges";}
-// Kernel threads and UNIX-domain sockets are hidden by default (they're the
-// noisy bulk); the rest start visible. Toggle any of them back on in the legend.
-const DEFHIDE=["proc-kernel","unix","unix-unnamed"];
-const hide=new Set(DEFHIDE),leg=document.getElementById("legend");
+// Which types start hidden is data-driven: any type flagged `hidden` in DATA.types
+// (for socketscope, the noisy kernel-threads / UNIX sockets) starts unchecked.
+const hide=new Set(TYPES.filter(t=>t.hidden).map(t=>t.id)),leg=document.getElementById("legend");
 TYPES.forEach(t=>{const r=document.createElement("div");r.className="row";
   const c=document.createElement("input");c.type="checkbox";c.checked=!hide.has(t.id);
   const s=document.createElement("span");s.className="sw";s.style.background=t.color;

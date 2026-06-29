@@ -15,6 +15,15 @@ Check things off as they land.
       (`socketscope-<ts>`), `-o -` to stdout, summary to stderr
 - [x] `render` subcommand: rebuild HTML from a saved snapshot JSON without
       polling the system (stdin/file in, stdout/`-o` out)
+- [x] Layered styling: baked **domain-agnostic** base (structure only) + per-type
+      colors generated from `types[]` (single source for legend + node fill, can't
+      drift) + per-snapshot `style` carrying the domain rules (listen/tree/io,
+      prepopulated by captures) + viewer-owned interaction states
+- [x] `render` works for **any directed graph** — only `nodes`+`edges` required;
+      `types`/`meta`/`style` optional, labels fall back to `id` (so the viewer
+      renders a plain tree/DAG JSON, not just socketscope captures)
+- [x] Default type visibility is data-driven (`"hidden": true` per `types[]` entry,
+      not hardcoded); the "Edge style" key text comes from a top-level `edge_key`
 - [x] Start this backlog
 
 ## Collector / data
@@ -67,9 +76,16 @@ Check things off as they land.
       safely sharing the HTML.
 - [ ] Easy install story (download URL / release); shebang + `chmod +x` already work.
 - [ ] `CHANGELOG.md` + version string.
+- [ ] **Document the JSON schema** (`SCHEMA.md`): the generic typed-directed-graph
+      format — `{meta, types, style, nodes, edges}`, the `<prefix>:<id>` convention,
+      `cls`/`dir`/`listen`, and the `style` stylesheet — so it can be reused/produced
+      by other tools.
 
 ## Quality / engineering
 
 - [ ] **Tests** for the `/proc` parsers (fixture-based) + minimal CI.
+- [ ] **Harden JSON-supplied `style`** for untrusted snapshots: strip/deny external
+      references (`background-image: url(http…)`, web fonts) so `render` can't be
+      coerced into a network fetch, preserving the offline guarantee.
 - [ ] **Performance**: replace the O(N²) repulsion with a Barnes-Hut/quadtree
       approximation for very large hosts; cap/warn on huge graphs.
