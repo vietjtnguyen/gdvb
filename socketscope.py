@@ -1471,6 +1471,7 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
  .row{display:flex;align-items:center;gap:7px;margin:3px 0}.sw{width:13px;height:13px;border-radius:3px;border:1px solid #999}
  button{font:inherit;padding:5px 9px;margin:2px 4px 2px 0;border:1px solid #ccc;border-radius:6px;background:#f4f4f8;cursor:pointer}
  button:hover{background:#ececf2}
+ button.on{background:#dfe7ff;border-color:#9db8f0;color:#13316b}
  #tip{position:absolute;display:none;max-width:360px;background:#222;color:#fff;font-size:12px;line-height:1.4;
       padding:7px 9px;border-radius:6px;white-space:pre-wrap;pointer-events:none;z-index:9}
  #status{font-size:11.5px;color:#555;margin:4px 0}
@@ -1489,7 +1490,7 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
     style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:6px;font:inherit">
   <div id="searchinfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
   <h2>Force layout (live)</h2>
-  <button id="jiggle">&#x1F300; Jiggle / reset</button><button id="fit">&#x2922; Fit</button>
+  <button id="pause">&#x23F8; Pause motion</button><button id="jiggle">&#x1F300; Jiggle / reset</button><button id="fit">&#x2922; Fit</button>
   <div class="row"><label for="fstruct">Force&nbsp;structure&nbsp;</label><select id="fstruct"></select></div>
   <div style="margin:6px 0 2px"><div style="display:flex;justify-content:space-between;font-size:11px;color:#777"><span>weak</span><span>strong</span></div>
     <input type="range" id="strength" min="0" max="100" value="45" style="width:100%"></div>
@@ -1641,7 +1642,7 @@ N.forEach(n=>{const bb=n.boundingBox();sz[n.id()]={w:bb.w||40,h:bb.h||22};});
 // place. Springs auto-skip edges whose endpoint isn't in `pos` (built from ACT).
 const NARR=N.toArray();let ACT=NARR;
 function rebuildActive(){ACT=NARR.filter(n=>nodeVisible(n.id()));}
-let damping=DAMP0,running=true,framed=false;const status=document.getElementById("status");
+let damping=DAMP0,running=true,framed=false,paused=false;const status=document.getElementById("status");
 const R=12*SEP*Math.sqrt(N.length);  /* start compact and expand outward; a huge cloud strands outer leaves that can't contract in before settle */
 cy.batch(()=>N.forEach(n=>{n.position({x:(Math.random()-.5)*2*R,y:(Math.random()-.5)*2*R});vel[n.id()]={vx:0,vy:0};}));
 function spring(pos,fx,fy,s,t,k,L){const a=pos[s],b=pos[t];if(!a||!b)return;
@@ -1671,7 +1672,10 @@ function tick(){const pos={},fx={},fy={},arr=ACT;
   if(!framed)cy.fit(undefined,40);
   if(maxv<SETTLE&&damping>.5){running=false;framed=true;if(status)status.textContent="✓ settled";}
   if(running)requestAnimationFrame(tick);}
-function reheat(k){damping=DAMP0;N.forEach(n=>{const v=vel[n.id()];v.vx+=(Math.random()-.5)*k;v.vy+=(Math.random()-.5)*k;});
+// Paused: the rAF loop is stopped and reheat is inert, so nothing (grab, jiggle,
+// filters, force changes) restarts autonomous motion. Nodes stay draggable - a
+// drag moves only that node, since the sim that would reflow neighbours is off.
+function reheat(k){if(paused)return;damping=DAMP0;N.forEach(n=>{const v=vel[n.id()];v.vx+=(Math.random()-.5)*k;v.vy+=(Math.random()-.5)*k;});
   if(!running){running=true;requestAnimationFrame(tick);}}
 applyForces(.45);requestAnimationFrame(tick);
 // Let the user zoom/pan WHILE it's still settling: the first viewport gesture
@@ -1785,6 +1789,10 @@ function runSearch(){const raw=searchEl.value.trim();
 let searchT=0;
 searchEl.addEventListener("input",()=>{clearTimeout(searchT);searchT=setTimeout(runSearch,160);});
 searchEl.addEventListener("keydown",e=>{if(e.key==="Enter"){clearTimeout(searchT);runSearch();}});
+const pauseBtn=document.getElementById("pause");
+pauseBtn.onclick=()=>{paused=!paused;
+  if(paused){running=false;pauseBtn.classList.add("on");pauseBtn.textContent="▶ Resume motion";if(status)status.textContent="⏸ paused";}
+  else{pauseBtn.classList.remove("on");pauseBtn.textContent="⏸ Pause motion";if(!running){running=true;requestAnimationFrame(tick);}}};
 document.getElementById("jiggle").onclick=()=>reheat(JIGGLE);
 document.getElementById("fit").onclick=()=>cy.fit(undefined,30);
 const fsel=document.getElementById("fstruct"),str=document.getElementById("strength");
