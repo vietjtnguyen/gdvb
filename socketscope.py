@@ -38,12 +38,15 @@ def cyto_js():
 
 
 # ---------------------------------------------------------------------------
-# Node types (drive color / filter / legend)
+# Class catalogs (drive color / filter / legend). Nodes and edges each carry a
+# set of classes (multi-membership, like CSS); these catalogs describe each
+# class: color, legend label, and default visibility. An element whose class
+# isn't cataloged falls into the viewer's synthesized "other" legend bucket.
 # ---------------------------------------------------------------------------
-TYPES = [
+NODE_CLASSES = [
     {"id": "proc-root", "label": "Process (root)", "color": "#E0533F"},
     {"id": "proc-user", "label": "Process (user)", "color": "#3F8EE0"},
-    # `hidden`: starts unchecked in the viewer's type filter (the noisy bulk).
+    # `hidden`: starts unchecked in the viewer's filter (the noisy bulk).
     # Absent => shown. The viewer reads this, so the default is data-driven.
     {"id": "proc-kernel", "label": "Kernel thread", "color": "#9AA0A6", "hidden": True},
     {"id": "tcp", "label": "TCP socket", "color": "#2FA86E"},
@@ -58,12 +61,20 @@ TYPES = [
     {"id": "remote", "label": "Remote endpoint", "color": "#D46BB0"},
 ]
 
+# Edge classes. `io` edges are recolored per-source by DOMAIN_STYLE (data(col)),
+# so the catalog color here is just the legend swatch / fallback.
+EDGE_CLASSES = [
+    {"id": "tree", "label": "process tree", "color": "#c3c8d0"},
+    {"id": "io", "label": "I/O (socket)", "color": "#9aa0a6"},
+]
+
 # Domain-specific appearance, emitted as the model's `style` block. These rules
 # reference socketscope's own node/edge fields (`listen`, the `tree`/`io` edge
 # classes), which a generic directed graph won't have — so they live here in the
 # data, not in the viewer's domain-agnostic baked-in base style. A graph that
 # carries no `style` (e.g. a hand-made tree) simply skips them. The viewer layers:
-# base (generic) + per-type colors (from `types`) + this `style` + interaction.
+# base (generic) + per-class colors (from node_classes/edge_classes) + this
+# `style` + interaction.
 DOMAIN_STYLE = [
     {
         "selector": 'node[listen = "yes"]',
@@ -134,13 +145,17 @@ FORCE_STRUCTURES = [
 # ---------------------------------------------------------------------------
 # The dirtree subcommand walks a directory and emits the same generic model the
 # socket capture does, proving the viewer is domain-agnostic. These blocks are
-# the dirtree analogue of TYPES / DOMAIN_STYLE / EDGE_KEY / TRAVERSALS /
-# FORCE_STRUCTURES above; build_dirtree assembles them into the model.
-DIRTREE_TYPES = [
+# the dirtree analogue of NODE_CLASSES / EDGE_CLASSES / DOMAIN_STYLE / EDGE_KEY /
+# TRAVERSALS / FORCE_STRUCTURES above; build_dirtree assembles them into the model.
+DIRTREE_NODE_CLASSES = [
     {"id": "dir-root", "label": "Root directory", "color": "#C9A227"},
     {"id": "dir", "label": "Directory", "color": "#3F8EE0"},
     {"id": "file", "label": "File", "color": "#5E8C6A"},
     {"id": "symlink", "label": "Symlink", "color": "#8A63D2"},
+    # `executable` is a second class a file node also carries (multi-membership).
+    # It's a MODIFIER class: no `color` (so it adds no fill rule that would override
+    # the `file` fill); its green border comes from DIRTREE_STYLE and layers on top.
+    {"id": "executable", "label": "Executable"},
     # Sockets/FIFOs/devices: noisy bulk, hidden by default like unix sockets.
     {
         "id": "special",
@@ -150,12 +165,22 @@ DIRTREE_TYPES = [
     },
 ]
 
-# Appearance keyed on dirtree's own node/edge fields. `edge.dir`/`edge.file`
-# weight the containment edges so the directory skeleton reads; `edge.symlink`
-# is dashed so the symlink->target relationship looks distinct from containment;
-# `node[exec = "yes"]` marks executable files (the dirtree analogue of the
-# socket `listen` rule). Broader data->appearance mapping (size/mtime colormaps)
-# is a future "visualization layers" concept; see BACKLOG.
+# Edge classes. Containment edges carry both `child` (every containment edge) and
+# a flavor (`dir`/`file`/`link`); symlink->target edges carry `symlink`.
+DIRTREE_EDGE_CLASSES = [
+    {"id": "child", "label": "contains", "color": "#c3c8d0"},
+    {"id": "dir", "label": "→ subdirectory", "color": "#9aa6c0"},
+    {"id": "file", "label": "→ file", "color": "#d3d7e0"},
+    {"id": "link", "label": "→ symlink entry", "color": "#cbb8ea"},
+    {"id": "symlink", "label": "symlink target", "color": "#8A63D2"},
+]
+
+# Appearance keyed on dirtree's classes. `edge.dir`/`edge.file` weight the
+# containment edges so the directory skeleton reads; `edge.symlink` is dashed so
+# the symlink->target relationship looks distinct; `node.executable` adds a
+# border that layers over the file fill (multi-membership). Broader
+# data->appearance mapping (size/mtime colormaps) is a future "visualization
+# layers" concept; see BACKLOG.
 DIRTREE_STYLE = [
     {
         "selector": "edge.dir",
@@ -175,7 +200,7 @@ DIRTREE_STYLE = [
         },
     },
     {
-        "selector": 'node[exec = "yes"]',
+        "selector": "node.executable",
         "style": {"border-width": 3, "border-color": "#2FA86E"},
     },
 ]
@@ -515,7 +540,7 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
                 "id": nid,
                 "label": label,
                 "full": full,
-                "type": ntype,
+                "classes": [ntype],
                 "listen": bool(listen),
             }
         )
@@ -554,8 +579,7 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
                     "source": "p:%d" % ppid,
                     "target": "p:%d" % pid,
                     "label": "parent of",
-                    "cls": "tree",
-                    "dir": True,
+                    "classes": ["tree"],
                 }
             )
 
@@ -568,8 +592,7 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
                     "source": "p:%d" % pid,
                     "target": sid,
                     "label": _io_label(s),
-                    "cls": "io",
-                    "dir": True,
+                    "classes": ["io"],
                 }
             )
 
@@ -593,8 +616,7 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
                         "source": sid,
                         "target": "s:%s" % peer_inode,
                         "label": "peer",
-                        "cls": "io",
-                        "dir": True,
+                        "classes": ["io"],
                     }
                 )
         else:
@@ -607,8 +629,7 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
                     "source": sid,
                     "target": rid,
                     "label": "connects",
-                    "cls": "io",
-                    "dir": True,
+                    "classes": ["io"],
                 }
             )
 
@@ -628,11 +649,13 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
         "unattributed": unattributed,
     }
     for n in nodes:
-        counts["by_type"][n["type"]] = counts["by_type"].get(n["type"], 0) + 1
+        for c in n["classes"]:
+            counts["by_type"][c] = counts["by_type"].get(c, 0) + 1
     for e in edges:
-        counts["by_class"][e["cls"]] = counts["by_class"].get(e["cls"], 0) + 1
+        for c in e["classes"]:
+            counts["by_class"][c] = counts["by_class"].get(c, 0) + 1
 
-    types = [t for t in TYPES if t["id"] not in ignore]
+    node_classes = [c for c in NODE_CLASSES if c["id"] not in ignore]
     captured = captured or datetime.datetime.now().astimezone()
     # title/subtitle are viewer presentation hints (tab title, header chip), kept
     # in the data so the viewer hardcodes no socket-specific wording.
@@ -650,7 +673,8 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
     return (
         {
             "meta": meta,
-            "types": types,
+            "node_classes": node_classes,
+            "edge_classes": EDGE_CLASSES,
             "style": DOMAIN_STYLE,
             "edge_key": EDGE_KEY,
             "traversals": TRAVERSALS,
@@ -746,11 +770,16 @@ def _dt_node(path, lst, ntype, is_root=False):
         "  ".join(detail),
         datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
     )
+    # Multi-membership: an executable file is both `file` and `executable`, so the
+    # executable border layers over the file fill (rather than a bolted-on flag).
+    classes = ["dir-root" if is_root else ntype]
+    if is_exec:
+        classes.append("executable")
     return {
         "id": _dt_nid(path),
         "label": label,
         "full": full,
-        "type": "dir-root" if is_root else ntype,
+        "classes": classes,
         "size": size,
         "mtime": mtime,
         "ctime": ctime,
@@ -760,7 +789,6 @@ def _dt_node(path, lst, ntype, is_root=False):
         "group": group,
         "mode": mode,
         "perms": perms,
-        "exec": "yes" if is_exec else "",
     }
 
 
@@ -769,8 +797,9 @@ def _dt_edge(parent_path, child_path, ntype):
         "source": _dt_nid(parent_path),
         "target": _dt_nid(child_path),
         "label": "contains",
-        "cls": "child " + _DT_FLAVOR.get(ntype, "special"),
-        "dir": True,
+        # `child` (every containment edge) + a flavor, so edge.child selects all
+        # containment while edge.dir selects just subdirectories.
+        "classes": ["child", _DT_FLAVOR.get(ntype, "special")],
     }
 
 
@@ -786,20 +815,18 @@ def _dt_finalize(root, nodes, edges, node_ids, pending_symlinks, truncated):
                     "source": _dt_nid(link),
                     "target": _dt_nid(tgt),
                     "label": "→ target",
-                    "cls": "symlink",
-                    "dir": True,
+                    "classes": ["symlink"],
                 }
             )
     edges = [e for e in edges if e["source"] in node_ids and e["target"] in node_ids]
 
     counts = {"nodes": len(nodes), "edges": len(edges), "by_type": {}, "by_class": {}}
     for n in nodes:
-        counts["by_type"][n["type"]] = counts["by_type"].get(n["type"], 0) + 1
+        for c in n["classes"]:
+            counts["by_type"][c] = counts["by_type"].get(c, 0) + 1
     for e in edges:
-        # representative class for the summary: the flavor (dir/file/link/special)
-        # for containment, or "symlink" for target edges.
-        key = e["cls"].split()[-1]
-        counts["by_class"][key] = counts["by_class"].get(key, 0) + 1
+        for c in e["classes"]:
+            counts["by_class"][c] = counts["by_class"].get(c, 0) + 1
 
     meta = {
         "title": "socketscope — " + root,
@@ -812,7 +839,8 @@ def _dt_finalize(root, nodes, edges, node_ids, pending_symlinks, truncated):
     return (
         {
             "meta": meta,
-            "types": DIRTREE_TYPES,
+            "node_classes": DIRTREE_NODE_CLASSES,
+            "edge_classes": DIRTREE_EDGE_CLASSES,
             "style": DIRTREE_STYLE,
             "edge_key": DIRTREE_EDGE_KEY,
             "traversals": DIRTREE_TRAVERSALS,
@@ -1080,8 +1108,8 @@ def print_summary(model, wrote, rerendered_from=None):
     )
     by_type = c.get("by_type", {})
     if by_type:
-        log("  nodes by type:")
-        for t in model.get("types", []):
+        log("  nodes by class:")
+        for t in model.get("node_classes", []):
             if by_type.get(t["id"]):
                 log("      %-12s %d" % (t["id"], by_type[t["id"]]))
     by_class = c.get("by_class", {})
@@ -1108,7 +1136,7 @@ def print_summary(model, wrote, rerendered_from=None):
 # capture (default): /proc -> model -> html [+ json]
 # ---------------------------------------------------------------------------
 def do_capture(args, ap):
-    type_ids = [t["id"] for t in TYPES]
+    type_ids = [c["id"] for c in NODE_CLASSES]
 
     # Resolve the set of node-type ids to drop.
     ignore = set()
@@ -1227,7 +1255,7 @@ def do_render(args, ap):
 # main
 # ---------------------------------------------------------------------------
 def main():
-    type_ids = [t["id"] for t in TYPES]
+    type_ids = [c["id"] for c in NODE_CLASSES]
     ap = argparse.ArgumentParser(
         prog="socketscope",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1465,7 +1493,6 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
     <input type="range" id="strength" min="0" max="100" value="45" style="width:100%"></div>
   <div id="status">&#9679; settling&hellip;</div>
   <div class="row"><input type="checkbox" id="elabels" checked><label for="elabels">show edge labels</label></div>
-  <div class="row"><input type="checkbox" id="tlabels" checked><label for="tlabels">show tree (&ldquo;parent of&rdquo;) labels</label></div>
   <h2>Select</h2>
   <button id="sel-all">All</button><button id="sel-none">None</button><button id="sel-invert">Invert</button>
   <button id="sel-grow">Grow</button><button id="sel-shrink">Shrink</button><button id="sel-walk">Walk</button><button id="sel-comp">Component</button>
@@ -1476,7 +1503,8 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
   <div id="traversesec"><h2>Traverse</h2><div id="traverse"></div>
     <div class="key">rule-based selection growth defined in the data</div></div>
   <div id="chaininfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
-  <h2>Types - click to filter</h2><div id="legend"></div>
+  <div id="nodelegendsec"><h2>Node classes - click to filter</h2><div id="legend"></div></div>
+  <div id="edgelegendsec"><h2>Edge classes - click to filter</h2><div id="edgelegend"></div></div>
   <div id="edgekeysec"><h2>Edge style</h2><div class="key" id="edgekey"></div></div>
   <h2>Export</h2>
   <button id="dljson">&#x2913; Download data (JSON)</button>
@@ -1489,8 +1517,11 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
    ({meta,types,nodes,edges}) and renders it. The collector is the only thing
    that knows about /proc, sockets, or processes. */
 const DATA=JSON.parse(document.getElementById("graph-data").textContent);
-const NODES=DATA.nodes, EDGES=DATA.edges, TYPES=DATA.types||[], META=DATA.meta||{};
-const COL=Object.fromEntries(TYPES.map(t=>[t.id,t.color]));
+const NODES=DATA.nodes, EDGES=DATA.edges, META=DATA.meta||{};
+const NODE_CLASSES=DATA.node_classes||[], EDGE_CLASSES=DATA.edge_classes||[];
+const COL=Object.fromEntries(NODE_CLASSES.filter(c=>c.color).map(c=>[c.id,c.color]));
+// First colored class of an element's class list (for the edge source-color override).
+const ncolor=cl=>{for(const c of (cl||[]))if(COL[c])return COL[c];return null;};
 const SEP=4;
 const STEP=.045, MAX_V=20*SEP, K_REP=6000*SEP, SPR_L=150*SEP, GRAV=.012/SEP;
 const COL_K=4, COL_PAD=20*SEP, DAMP0=.08, DAMP_MAX=.9, DAMP_RAMP=.0016, SETTLE=.2*SEP, JIGGLE=40*SEP;
@@ -1510,17 +1541,20 @@ const RING=.55*SPR_L, RAD_K=.05;
 // size, listen, ...) - the viewer hardcodes nothing domain-specific. Booleans
 // become "yes"/"no" so predicate selectors like [exec = "yes"] work uniformly.
 const norm=o=>{const d={};for(const k in o)d[k]=o[k]===true?"yes":o[k]===false?"no":o[k];return d;};
+const cls2str=cl=>(cl||[]).join(" ");
 const els=NODES.map(n=>({data:Object.assign(norm(n),{id:n.id,label:n.label||n.id,
-    full:n.full||n.label||n.id,tip:(n.full||n.label||n.id||"")+(n.type?"\n\n["+n.type+"]":"")})}))
+    full:n.full||n.label||n.id,tip:(n.full||n.label||n.id||"")+((n.classes&&n.classes.length)?"\n\n["+n.classes.join(", ")+"]":"")}),classes:cls2str(n.classes)}))
  .concat(EDGES.map((e,i)=>({data:Object.assign(norm(e),{id:"e"+i,source:e.source,target:e.target,
-    col:COL[(NODES.find(n=>n.id===e.source)||{}).type]||"#9aa0a6",tip:e.label||""}),classes:e.cls})));
+    col:ncolor((NODES.find(n=>n.id===e.source)||{}).classes)||"#9aa0a6",tip:e.label||""}),classes:cls2str(e.classes)})));
 // Styling is layered, applied in order:
 //  1) BASE_STYLE - baked here, DOMAIN-AGNOSTIC: structure only (shape, labels,
 //     sizing, arcs, arrows, neutral greys). No type colors, no socketscope-specific
 //     fields, so ANY directed graph renders as readable labelled rectangles.
-//  2) TYPE_STYLE - generated from DATA.types at runtime: one rule per type painting
-//     its color. types[] is thus the SINGLE source for both the legend swatch and
-//     the node fill, so they can't drift apart. (Empty when a graph has no types.)
+//  2) CLASS_STYLE - generated from node_classes/edge_classes at runtime: one rule
+//     per class painting its color (node fill / edge line). The catalogs are thus
+//     the SINGLE source for both the legend swatch and the element color, so they
+//     can't drift. Multi-membership composes (a node in two classes gets both
+//     rules). (Empty when a graph supplies no class catalogs.)
 //  3) DATA.style - the snapshot's own rules. A socketscope capture prepopulates this
 //     with its domain styling (listen border, tree/io edge colors); a generic graph
 //     usually has none.
@@ -1534,7 +1568,8 @@ const BASE_STYLE=[
     "width":1.4,"line-color":"#9aa0a6","target-arrow-color":"#9aa0a6","target-arrow-shape":"triangle","arrow-scale":.9,"opacity":.82}},
   {selector:"edge.showlabel",style:{"label":"data(label)","font-size":9,"color":"#555","text-rotation":"autorotate",
     "text-background-color":"#fbfbfd","text-background-opacity":.9,"text-background-padding":"2px"}}];
-const TYPE_STYLE=TYPES.map(t=>({selector:'node[type = "'+t.id+'"]',style:{"background-color":t.color}}));
+const CLASS_STYLE=NODE_CLASSES.filter(c=>c.color).map(c=>({selector:"node."+c.id,style:{"background-color":c.color}}))
+  .concat(EDGE_CLASSES.filter(c=>c.color).map(c=>({selector:"edge."+c.id,style:{"line-color":c.color,"target-arrow-color":c.color}})));
 const INTERACTION_STYLE=[
   {selector:"node.pinned",style:{"border-style":"dashed","border-width":3,"border-color":"#c77800",
     "underlay-color":"#e0a800","underlay-opacity":.2,"underlay-padding":4}},
@@ -1542,7 +1577,7 @@ const INTERACTION_STYLE=[
   {selector:"node.faded",style:{"background-opacity":.12,"border-opacity":.18,"text-opacity":.7,"color":"#444"}},
   {selector:"edge.faded",style:{"opacity":.07,"text-opacity":0}}];
 const cy=cytoscape({container:document.getElementById("net"),elements:els,wheelSensitivity:.25,layout:{name:"preset"},
-  style:BASE_STYLE.concat(TYPE_STYLE).concat(DATA.style||[]).concat(INTERACTION_STYLE)});
+  style:BASE_STYLE.concat(CLASS_STYLE).concat(DATA.style||[]).concat(INTERACTION_STYLE)});
 // Selection is node-only: edges are never selectable (a click/box-select never
 // touches them and a drag pans straight through a hairball). Events stay on, so
 // hover tooltips below still work; nodes remain selectable + grabbable.
@@ -1556,11 +1591,21 @@ let selectedId=null,hop=null,radial=false,radK=RAD_K;
 const pinned=new Set();  // node ids frozen in place (still exert forces, just don't move)
 const ADJ={};cy.nodes().forEach(n=>ADJ[n.id()]=[]);
 EDGES.forEach(e=>{if(ADJ[e.source]&&ADJ[e.target]){ADJ[e.source].push(e.target);ADJ[e.target].push(e.source);}});
-// Per-node lookups for the selection / traversal tools. TYPE for hidden checks;
-// INC = every edge touching a node with its orientation (edge ids are "e"+index,
-// matching the cytoscape element ids built above). ADJ (bidirectional, built
-// just above) is reused by the generic topology tools.
-const TYPE={};NODES.forEach(n=>TYPE[n.id]=n.type);
+// Per-element class lists + per-class visibility. INC = every edge touching a node
+// with its orientation (edge ids are "e"+index, matching the cytoscape element ids
+// built above). ADJ (bidirectional, built just above) is reused by the topology tools.
+const NCLS={};NODES.forEach(n=>NCLS[n.id]=n.classes||[]);
+const ECLS={};EDGES.forEach((e,i)=>ECLS["e"+i]=e.classes||[]);
+// Visibility is OR over an element's classes: hidden only when ALL its classes are
+// toggled off. Classes absent from the catalog (or an element with none) fall into
+// the synthesized "other" bucket. hideNode/hideEdge seed from each catalog's `hidden`.
+const OTHER="__other__";
+const NODE_DECL=new Set(NODE_CLASSES.map(c=>c.id)), EDGE_DECL=new Set(EDGE_CLASSES.map(c=>c.id));
+const hideNode=new Set(NODE_CLASSES.filter(c=>c.hidden).map(c=>c.id));
+const hideEdge=new Set(EDGE_CLASSES.filter(c=>c.hidden).map(c=>c.id));
+const visBy=(cl,decl,hide)=>(!cl||!cl.length)?!hide.has(OTHER):cl.some(c=>!hide.has(decl.has(c)?c:OTHER));
+const nodeVisible=id=>visBy(NCLS[id],NODE_DECL,hideNode);
+const edgeVisible=eid=>visBy(ECLS[eid],EDGE_DECL,hideEdge);
 const INC={};NODES.forEach(n=>INC[n.id]=[]);
 EDGES.forEach((e,i)=>{const id="e"+i;
   if(INC[e.source])INC[e.source].push({e:id,s:e.source,t:e.target});
@@ -1593,7 +1638,7 @@ N.forEach(n=>{const bb=n.boundingBox();sz[n.id()]={w:bb.w||40,h:bb.h||22};});
 // otherwise hidden nodes keep repelling/springing and pin the visible ones in
 // place. Springs auto-skip edges whose endpoint isn't in `pos` (built from ACT).
 const NARR=N.toArray();let ACT=NARR;
-function rebuildActive(){ACT=NARR.filter(n=>!hide.has(n.data("type")));}
+function rebuildActive(){ACT=NARR.filter(n=>nodeVisible(n.id()));}
 let damping=DAMP0,running=true,framed=false;const status=document.getElementById("status");
 const R=12*SEP*Math.sqrt(N.length);  /* start compact and expand outward; a huge cloud strands outer leaves that can't contract in before settle */
 cy.batch(()=>N.forEach(n=>{n.position({x:(Math.random()-.5)*2*R,y:(Math.random()-.5)*2*R});vel[n.id()]={vx:0,vy:0};}));
@@ -1666,8 +1711,8 @@ function clearSel(){suppressSel=true;cy.nodes().unselect();suppressSel=false;app
 
 // --- Generic Select tools: topology only, operate on VISIBLE nodes via ADJ ---
 const curSel=()=>cy.$("node:selected").map(n=>n.id());
-const vnbrs=u=>(ADJ[u]||[]).filter(v=>!hide.has(TYPE[v]));      // visible neighbours
-const visIds=()=>NODES.filter(n=>!hide.has(n.type)).map(n=>n.id);
+const vnbrs=u=>(ADJ[u]||[]).filter(v=>nodeVisible(v));      // visible neighbours
+const visIds=()=>NODES.filter(n=>nodeVisible(n.id)).map(n=>n.id);
 document.getElementById("sel-all").onclick=()=>{const a=visIds();setSel(a);info("selected "+a.length);};
 document.getElementById("sel-none").onclick=clearSel;
 document.getElementById("sel-invert").onclick=()=>{const s=new Set(curSel());setSel(visIds().filter(id=>!s.has(id)));};
@@ -1697,7 +1742,7 @@ function runTraversal(tool){const seeds=curSel();if(!seeds.length)return info("s
     return null;};
   const seen=new Set(seeds);
   const expand=fr=>{const nx=[];fr.forEach(u=>(INC[u]||[]).forEach(inc=>{const f=cross(inc,u);
-    if(f!=null&&!hide.has(TYPE[f])&&!seen.has(f)){seen.add(f);nx.push(f);}}));return nx;};
+    if(f!=null&&nodeVisible(f)&&!seen.has(f)){seen.add(f);nx.push(f);}}));return nx;};
   if(tool.mode==="step"){expand(seeds.slice());}else{let fr=seeds.slice();while(fr.length)fr=expand(fr);}
   let result=[...seen];if(tool.deselectSource)result=result.filter(id=>seeds.indexOf(id)<0);
   setSel(result);
@@ -1722,7 +1767,7 @@ document.getElementById("pinsel").onclick=doPin;
 // query = space-separated terms, ALL must appear (case-insensitive substring);
 // wrap in /.../ for a regex (e.g. /:(80|443)\b/ or /sshd/i). Matches become the
 // selection, so you can search then "Trace chain" straight from the results.
-const SRCH={},SRCHLO={};NODES.forEach(n=>{const s=(n.label||"")+"\n"+(n.full||"")+"\n"+n.type;SRCH[n.id]=s;SRCHLO[n.id]=s.toLowerCase();});
+const SRCH={},SRCHLO={};NODES.forEach(n=>{const s=(n.label||"")+"\n"+(n.full||"")+"\n"+(n.classes||[]).join(" ");SRCH[n.id]=s;SRCHLO[n.id]=s.toLowerCase();});
 const searchEl=document.getElementById("search"),searchInfo=document.getElementById("searchinfo");
 function runSearch(){const raw=searchEl.value.trim();
   if(!raw){searchInfo.textContent="";clearSel();return;}
@@ -1731,7 +1776,7 @@ function runSearch(){const raw=searchEl.value.trim();
     test=id=>re.test(SRCH[id]);}
   else{const toks=raw.toLowerCase().split(/\s+/);test=id=>{const s=SRCHLO[id];return toks.every(t=>s.indexOf(t)>=0);};}
   searchInfo.style.color="#1f6feb";
-  const ids=[];NODES.forEach(n=>{if(!hide.has(n.type)&&test(n.id))ids.push(n.id);});
+  const ids=[];NODES.forEach(n=>{if(nodeVisible(n.id)&&test(n.id))ids.push(n.id);});
   setSel(ids);
   searchInfo.textContent=ids.length+" match"+(ids.length===1?"":"es")+(ids.length?" · selected (Traverse to expand)":"");
   framed=true;const sel=cy.$("node:selected");if(sel.length){cy.fit(sel,80);if(cy.zoom()>1.6)cy.zoom(1.6);}}
@@ -1745,10 +1790,9 @@ FS.forEach(m=>{const o=document.createElement("option");o.value=m.id;o.textConte
 fsel.value=fstruct;
 fsel.onchange=()=>{fstruct=fsel.value;if(fstruct==="radial"&&selectedId)computeHop();applyForces(+str.value/100);reheat(10*SEP);};
 str.oninput=()=>{applyForces(+str.value/100);reheat(0);};
-const elbl=document.getElementById("elabels"),tlbl=document.getElementById("tlabels");
-const al=()=>cy.batch(()=>cy.edges().forEach(x=>{
-  const on=elbl.checked&&(x.hasClass("tree")?tlbl.checked:true);x.toggleClass("showlabel",on);}));
-elbl.onchange=al;tlbl.onchange=al;al();
+const elbl=document.getElementById("elabels");
+const al=()=>cy.batch(()=>cy.edges().forEach(x=>x.toggleClass("showlabel",elbl.checked)));
+elbl.onchange=al;al();
 document.title=META.title||"socketscope";
 {const tl=document.getElementById("title");if(META.title)tl.textContent=META.title;else tl.style.display="none";}
 document.getElementById("host").textContent=[META.host,META.captured,META.subtitle].filter(Boolean).join("  ·  ");
@@ -1765,23 +1809,40 @@ document.getElementById("dljson").onclick=()=>{
   a.href=url;a.download=(META.title?META.title.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,""):("graph-"+(META.host||"snapshot")))+".json";
   document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),0);};
 const countEl=document.getElementById("count");
-function updateCount(){const vis=NODES.reduce((a,n)=>a+(hide.has(n.type)?0:1),0);
+function updateCount(){const vis=NODES.reduce((a,n)=>a+(nodeVisible(n.id)?1:0),0);
   countEl.textContent=(vis<NODES.length?vis+" of "+NODES.length:NODES.length)+" nodes · "+EDGES.length+" edges";}
-// Which types start hidden is data-driven: any type flagged `hidden` in DATA.types
-// (for socketscope, the noisy kernel-threads / UNIX sockets) starts unchecked.
-const hide=new Set(TYPES.filter(t=>t.hidden).map(t=>t.id)),leg=document.getElementById("legend");
-TYPES.forEach(t=>{const r=document.createElement("div");r.className="row";
-  const c=document.createElement("input");c.type="checkbox";c.checked=!hide.has(t.id);
-  const s=document.createElement("span");s.className="sw";s.style.background=t.color;
-  const b=document.createElement("label");b.textContent=t.label;
-  c.onchange=()=>{c.checked?hide.delete(t.id):hide.add(t.id);
-    cy.batch(()=>cy.nodes().forEach(n=>n.style("display",hide.has(n.data("type"))?"none":"element")));
-    rebuildActive();updateCount();reheat(8*SEP);};  /* drop hidden type from the physics and re-settle the rest */
-  b.onclick=()=>{c.checked=!c.checked;c.onchange();};r.append(c,s,b);leg.append(r);});
+// Apply visibility to view + physics. Per-class OR semantics (see nodeVisible/
+// edgeVisible); Cytoscape also drops edges whose endpoints are hidden.
+function applyVis(){
+  cy.batch(()=>{
+    cy.nodes().forEach(n=>n.style("display",nodeVisible(n.id())?"element":"none"));
+    cy.edges().forEach(e=>e.style("display",edgeVisible(e.id())?"element":"none"));
+  });
+  rebuildActive();updateCount();}
+// Two legends (node classes / edge classes), each built from its catalog plus a
+// synthesized "other" row for classes present in the data but not cataloged (or
+// elements with no class). Visibility default is data-driven via each class's
+// `hidden`. Sections with no rows are hidden.
+function classesPresent(arr,decl){const present=new Set();let other=false;
+  arr.forEach(o=>{const cl=o.classes||[];if(!cl.length)other=true;cl.forEach(c=>{present.add(c);if(!decl.has(c))other=true;});});
+  return {present,other};}
+function buildLegend(boxId,secId,catalog,decl,hideSet,info){
+  const box=document.getElementById(boxId);
+  const mk=(id,label,color)=>{const r=document.createElement("div");r.className="row";
+    const c=document.createElement("input");c.type="checkbox";c.checked=!hideSet.has(id);
+    const s=document.createElement("span");s.className="sw";if(color)s.style.background=color;
+    const b=document.createElement("label");b.textContent=label;
+    c.onchange=()=>{c.checked?hideSet.delete(id):hideSet.add(id);applyVis();reheat(8*SEP);};
+    b.onclick=()=>{c.checked=!c.checked;c.onchange();};r.append(c,s,b);box.append(r);};
+  let rows=0;
+  catalog.forEach(t=>{if(info.present.has(t.id)){mk(t.id,t.label||t.id,t.color);rows++;}});
+  if(info.other){mk(OTHER,"other",null);rows++;}
+  if(!rows){const sec=document.getElementById(secId);if(sec)sec.style.display="none";}}
+buildLegend("legend","nodelegendsec",NODE_CLASSES,NODE_DECL,hideNode,classesPresent(NODES,NODE_DECL));
+buildLegend("edgelegend","edgelegendsec",EDGE_CLASSES,EDGE_DECL,hideEdge,classesPresent(EDGES,EDGE_DECL));
 // apply the default-hidden state up front: remove from view AND the physics so
-// they don't shove the visible nodes around before you ever touch the legend.
-cy.batch(()=>cy.nodes().forEach(n=>n.style("display",hide.has(n.data("type"))?"none":"element")));
-rebuildActive();updateCount();
+// they don't shove the visible nodes around before you ever touch a legend.
+applyVis();
 </script></body></html>"""
 
 

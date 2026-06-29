@@ -51,6 +51,16 @@ Check things off as they land.
       `node[exec="yes"]` rule silently never matched. Now every scalar node/edge field
       is spread into element data (booleans coerced to `yes`/`no`), so `style`/traversal
       selectors can key on anything a generator emits.
+- [x] **Multi-class model.** Replaced singular `node.type` + ad-hoc edge `cls` with a
+      CSS-style class model: nodes and edges each carry a `classes` array
+      (multi-membership), catalogs renamed to `node_classes` / `edge_classes` (both with
+      a color/legend/visibility entry per class). Styles compose across matching class
+      rules (e.g. a file that's also `executable` gets the file fill + an executable
+      border; a class with no `color` is a pure modifier). The viewer has two legends
+      (node + edge) with **OR-visibility** (hidden only when all of an element's classes
+      are off) and an `other` catch-all for uncataloged classes. Also de-socketed the
+      tree-label toggle (triage #1) — hiding tree-edge labels is now just hiding the
+      `tree` edge class. Breaking change; v0, no back-compat.
 - [x] Start this backlog
 
 ## Collector / data

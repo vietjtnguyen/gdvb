@@ -94,7 +94,7 @@ git -C ~/project ls-files | socketscope.py dirtree - -C ~/project -o repo
 
 ### Filtering at capture time
 
-`--ignore` drops node types from the data entirely (smaller file, less clutter). You can also just hide/show types live in the viewer's legend after the fact. Type ids: `proc-root`, `proc-user`, `proc-kernel`, `tcp`, `udp`, `unix`, `unix-unnamed`, `remote`. Run `socketscope.py --help` for the convenience flags (`--ignore-uds`, `--ignore-kernel`, …).
+`--ignore` drops node classes from the data entirely (smaller file, less clutter). You can also just hide/show classes live in the viewer's legend after the fact. Class ids: `proc-root`, `proc-user`, `proc-kernel`, `tcp`, `udp`, `unix`, `unix-unnamed`, `remote`. Run `socketscope.py --help` for the convenience flags (`--ignore-uds`, `--ignore-kernel`, …).
 
 ## Exploring the graph
 
@@ -107,7 +107,7 @@ The graph self-organizes with a live force simulation that settles and stops. Th
 - **Trace chain** — the killer feature, and now a **data-driven traversal tool** (a `Traverse` button) rather than hardcoded. Select a process (or socket, or search result) and trace the connected **data chain**: it follows sockets *laterally* to other processes that share them and *down* to child processes — but never *up* to parents, so it won't climb to `init` and swallow the whole host. Its behavior is just a rule in the JSON (`{edge:"edge.tree",dir:"out"}, {edge:"edge.io",dir:"both"}`), so a graph can ship its own traversals (see Styling/Schema). Search `tcp`, hit Trace, and watch the related processes light up.
 - **Pin** — freeze selected nodes in place (they still exert forces, so they anchor their neighbors). Pin a hub or a chain and let the rest settle around it.
 - **Force structure** — how the layout's springs are weighted (a data-driven dropdown). socketscope ships **process tree** (cluster by ancestry) and **data flow** (cluster by socket connectivity); every graph also gets the built-in **spread** (all edges equal) and **distance from selected** (concentric rings of hop-distance). A **strength** slider scales the emphasis.
-- **Filter** — click legend swatches to show/hide node types. **Kernel threads and UNIX-domain sockets start hidden** by default (they're the noisy bulk); which types start hidden is data-driven (a `"hidden": true` flag on those `types[]` entries), not hardcoded.
+- **Filter** — two legends (**Node classes** and **Edge classes**) whose swatches show/hide by class. Nodes and edges each carry a *set* of classes (multi-membership), and visibility is **OR**: an element hides only when *all* its classes are off (so hiding the `file` edge class thins a dirtree to its directory skeleton, while an executable file stays visible via its `executable` class). **Kernel threads and UNIX-domain sockets start hidden** by default (the noisy bulk); which classes start hidden is data-driven (a `"hidden": true` flag on the catalog entry), not hardcoded. Classes not in the catalog collapse into an `other` row.
 - **Pan/zoom** freely, **drag** nodes (they pin while held), **hover** for full details (cmdline, addresses, owners), click a node to isolate its neighbourhood.
 - **Download data (JSON)** — export the captured graph model (nodes, edges, meta) for use elsewhere.
 
@@ -128,8 +128,8 @@ Cytoscape.js is bundled into the script as a compressed blob and decompressed at
 
 Appearance is built from layered [Cytoscape stylesheets](https://js.cytoscape.org/#style), applied in order:
 
-1. **Base** — baked into the viewer and strictly **domain-agnostic**: structure only (rectangles, labels-inside, sizing, arc edges + arrowheads, neutral greys). No type colors and no socketscope-specific fields. So *any* directed graph renders as readable labelled rectangles rather than bare dots.
-2. **Type colors** — generated at runtime from `types[]`: one rule per type (`node[type = "tcp"] { background-color: … }`). `types[]` is therefore the **single source** for both the legend swatch *and* the node fill, so they can't drift apart — recolor a type by editing its `types[]` entry and both update together. Each entry may also carry `"hidden": true` to start that type unchecked in the filter. (Empty when a graph has no `types`.)
+1. **Base** — baked into the viewer and strictly **domain-agnostic**: structure only (rectangles, labels-inside, sizing, arc edges + arrowheads, neutral greys). No class colors and no socketscope-specific fields. So *any* directed graph renders as readable labelled rectangles rather than bare dots.
+2. **Class colors** — generated at runtime from `node_classes[]` / `edge_classes[]`: one rule per class (`node.tcp { background-color: … }`, `edge.io { line-color: … }`). The catalogs are therefore the **single source** for both the legend swatch *and* the element color, so they can't drift — recolor a class by editing its catalog entry and both update together. Each entry may carry `"hidden": true` to start that class unchecked. Because nodes/edges hold a **set** of classes, rules **compose** (a node that is both `file` and `executable` gets the `file` fill *and* the `executable` border); a class with no `color` is a pure modifier (e.g. `executable` contributes only its border). (Empty when a graph supplies no catalogs.)
 3. **Snapshot `style`** — a top-level `style` array in the JSON (a Cytoscape stylesheet). A socketscope capture **prepopulates** this with its *domain* styling — the `node[listen = "yes"]` hub border and the `io`/`tree` edge colors — because those reference fields a generic graph wouldn't have. Edit it (or add your own) and `render` to restyle without touching code; a generic graph simply omits it.
 4. **Interaction states** — selection, traced chain, pinned, faded — owned by the viewer and applied last, so a snapshot's `style` can restyle the graph but can't break selection/trace/pin.
 
@@ -139,9 +139,9 @@ A top-level **`traversals`** array defines the **Traverse** tools (the buttons t
 
 A top-level **`force_structures`** array defines the **Force structure** dropdown (how the layout weights its springs). Each is `{id, label, emphasize}` where `emphasize` is an edge selector; when active, matching edges spring strongly (strength-scaled) and the rest weakly, so the layout clusters around them. socketscope ships `tree`/`flow`; the viewer always adds built-in **spread** and **distance from selected**, so a graph that omits it still lays out.
 
-Because the base is fully generic and `render` only requires `nodes` + `edges`, the viewer doubles as a renderer for **any directed graph** — hand a `{ "nodes": [...], "edges": [...] }` file (a tree, a dependency graph, …) to `socketscope.py render` and it draws. `types`, `meta`, `style`, `edge_key`, `traversals`, and `force_structures` are all optional; nodes fall back to their `id` for a label.
+Because the base is fully generic and `render` only requires `nodes` + `edges`, the viewer doubles as a renderer for **any directed graph** — hand a `{ "nodes": [...], "edges": [...] }` file (a tree, a dependency graph, …) to `socketscope.py render` and it draws. `node_classes`, `edge_classes`, `meta`, `style`, `edge_key`, `traversals`, and `force_structures` are all optional; nodes fall back to their `id` for a label, and any class not in a catalog shows up under the legend's `other` row.
 
-(Note: a hand-edited override `style` that references an external `url(...)` or web font would fetch over the network when rendered — see BACKLOG; the built-in base + type colors contain no external references.)
+(Note: a hand-edited override `style` that references an external `url(...)` or web font would fetch over the network when rendered — see BACKLOG; the built-in base + class colors contain no external references.)
 
 ## Compatibility
 
