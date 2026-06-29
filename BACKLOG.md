@@ -28,6 +28,12 @@ Check things off as they land.
       Shrink/Walk/Component) hardcoded in the viewer, plus data-driven **Traverse**
       tools (`traversals` block, endpoint-aware Cytoscape-selector rules + dir +
       flood/step). Trace chain is now the default traversal tool emitted to the JSON.
+- [x] Unify selection focus (selected nodes + their incident edges un-faded, rest
+      faded; nothing selected = nothing faded) and make edges non-selectable.
+- [x] Data-driven **Force structure** modes (renamed from "Focus"): `force_structures`
+      block, each emphasizes an edge selector; spring weighting unified to one
+      per-edge weight; built-in `spread` + `distance from selected`. This was the last
+      domain-coupled viewer feature — the viewer is now fully generic over the JSON.
 - [x] Start this backlog
 
 ## Collector / data

@@ -115,6 +115,18 @@ TRAVERSALS = [
     },
 ]
 
+# Force-layout structures ("Force Structure" selector), emitted as the model's
+# top-level `force_structures`. Each mode makes edges matching its `emphasize`
+# selector spring strongly (strength-scaled) and the rest weak — so the layout
+# clusters around those edges. `emphasize` is a Cytoscape edge selector (same
+# language as `style`). The viewer also offers built-in generic modes (spread =
+# all edges equal; distance-from-selected = radial rings), so a graph that omits
+# this still lays out.
+FORCE_STRUCTURES = [
+    {"id": "tree", "label": "process tree", "emphasize": "edge.tree"},
+    {"id": "flow", "label": "data flow", "emphasize": "edge.io"},
+]
+
 TCP_STATES = {
     0x01: "ESTABLISHED",
     0x02: "SYN_SENT",
@@ -550,6 +562,7 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
             "style": DOMAIN_STYLE,
             "edge_key": EDGE_KEY,
             "traversals": TRAVERSALS,
+            "force_structures": FORCE_STRUCTURES,
             "nodes": nodes,
             "edges": edges,
         },
@@ -913,9 +926,7 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
   <div id="searchinfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
   <h2>Force layout (live)</h2>
   <button id="jiggle">&#x1F300; Jiggle / reset</button><button id="fit">&#x2922; Fit</button>
-  <div class="row"><label for="focus">Focus&nbsp;</label><select id="focus">
-    <option value="tree">process tree</option><option value="flow">data flow</option>
-    <option value="radial">distance from selected</option></select></div>
+  <div class="row"><label for="fstruct">Force&nbsp;structure&nbsp;</label><select id="fstruct"></select></div>
   <div style="margin:6px 0 2px"><div style="display:flex;justify-content:space-between;font-size:11px;color:#777"><span>weak</span><span>strong</span></div>
     <input type="range" id="strength" min="0" max="100" value="45" style="width:100%"></div>
   <div id="status">&#9679; settling&hellip;</div>
@@ -947,17 +958,18 @@ const DATA=JSON.parse(document.getElementById("graph-data").textContent);
 const NODES=DATA.nodes, EDGES=DATA.edges, TYPES=DATA.types||[], META=DATA.meta||{};
 const COL=Object.fromEntries(TYPES.map(t=>[t.id,t.color]));
 const SEP=4;
-const STEP=.045, MAX_V=20*SEP, K_REP=6000*SEP, SPR_L=150*SEP, CONT_L=82*SEP, GRAV=.012/SEP;
+const STEP=.045, MAX_V=20*SEP, K_REP=6000*SEP, SPR_L=150*SEP, GRAV=.012/SEP;
 const COL_K=4, COL_PAD=20*SEP, DAMP0=.08, DAMP_MAX=.9, DAMP_RAMP=.0016, SETTLE=.2*SEP, JIGGLE=40*SEP;
 // Repulsion is local: beyond REP_CUT, node pairs don't repel. Without this the
 // cumulative far-field of a big graph flings weakly-tethered leaves (sockets)
 // far out, where their one weak spring can't reel them back before the anneal
 // freezes. Scales with SEP like the other spacing constants.
 const REP_CUT=2*SPR_L, REP_CUT2=REP_CUT*REP_CUT;
-// io edges (process->socket->remote) rest at half the generic spring length so
-// sockets sit as tight satellites of their owning process instead of floating
-// out at full edge length and reading as stragglers around a dense tree core.
-const IO_L=.5*SPR_L;
+// Edge springs: one rest length + base stiffness for all edges. The active Force
+// Structure sets each edge's WEIGHT (emphasized = strength-scaled, else W_BASE),
+// so emphasized edges pull hard and cluster the layout. SPR_E ~ the old per-class
+// lengths (which were near-equal); W_BASE keeps non-emphasized leaves reeled in.
+const SPR_E=.5*SPR_L, K_SPRING=.05, W_BASE=.2;
 const RING=.55*SPR_L, RAD_K=.05;
 const els=NODES.map(n=>({data:{id:n.id,label:n.label||n.id,full:n.full||n.label||n.id,type:n.type,
     listen:n.listen?"yes":"no",tip:(n.full||n.label||n.id||"")+(n.type?"\n\n["+n.type+"]":"")}}))
@@ -1001,7 +1013,7 @@ const tip=document.getElementById("tip");
 cy.on("mouseover","node,edge",e=>{const t=e.target.data("tip");if(t){tip.textContent=t;tip.style.display="block";}});
 cy.on("mousemove","node,edge",e=>{tip.style.left=(e.originalEvent.pageX+12)+"px";tip.style.top=(e.originalEvent.pageY+12)+"px";});
 cy.on("mouseout","node,edge",()=>tip.style.display="none");
-let selectedId=null,hop=null,focus="tree",wTREE=2.6,wIO=.5,radial=false,radK=RAD_K;
+let selectedId=null,hop=null,radial=false,radK=RAD_K;
 const pinned=new Set();  // node ids frozen in place (still exert forces, just don't move)
 const ADJ={};cy.nodes().forEach(n=>ADJ[n.id()]=[]);
 EDGES.forEach(e=>{if(ADJ[e.source]&&ADJ[e.target]){ADJ[e.source].push(e.target);ADJ[e.target].push(e.source);}});
@@ -1014,14 +1026,27 @@ const INC={};NODES.forEach(n=>INC[n.id]=[]);
 EDGES.forEach((e,i)=>{const id="e"+i;
   if(INC[e.source])INC[e.source].push({e:id,s:e.source,t:e.target});
   if(INC[e.target])INC[e.target].push({e:id,s:e.source,t:e.target});});
-function applyForces(t){const s=.2+t*t*12;
-  if(focus==="flow"){wIO=s;wTREE=.15;radial=false;}
-  else if(focus==="radial"){wIO=.3;wTREE=.3;radial=true;radK=RAD_K*(.4+s*.25);}
-  else{wIO=.5;wTREE=s;radial=false;}}  /* tree focus: non-focused io kept at .5 so leaf sockets hug their process */
+// Recompute per-edge spring weights for the active Force Structure + strength.
+// radial: gentle uniform springs while the ring force dominates. Otherwise edges
+// matching the mode's `emphasize` selector get the strong (strength-scaled) weight,
+// the rest W_BASE. `emphasize` null => "spread" (all edges equal).
+function applyForces(t){const s=.2+t*t*12;const m=FS_BY_ID[fstruct]||FS[0];
+  if(m.id==="radial"){radial=true;radK=RAD_K*(.4+s*.25);for(let i=0;i<EW.length;i++)EW[i]=.3;return;}
+  radial=false;
+  const emph=m.emphasize?new Set(cy.edges(m.emphasize).map(e=>e.id())):null;
+  for(let i=0;i<EW.length;i++)EW[i]=(!emph||emph.has("e"+i))?s:W_BASE;}
 function computeHop(){hop={};if(!selectedId)return;const q=[selectedId];hop[selectedId]=0;
   for(let i=0;i<q.length;i++){const u=q[i];(ADJ[u]||[]).forEach(v=>{if(hop[v]===undefined){hop[v]=hop[u]+1;q.push(v);}});}}
-const E_TREE=EDGES.filter(e=>e.cls==="tree").map(e=>({s:e.source,t:e.target}));
-const E_IO=EDGES.filter(e=>e.cls!=="tree").map(e=>({s:e.source,t:e.target}));
+// Force Structure modes: the data-driven ones (DATA.force_structures) plus built-in
+// generic modes. First entry is the default; a graph with no data modes defaults to
+// "spread". `emphasize:null` => all edges (spread); "radial" is the ring layout.
+const FS=(DATA.force_structures||[]).concat([
+  {id:"spread",label:"spread",emphasize:null},
+  {id:"radial",label:"distance from selected"}]);
+const FS_BY_ID={};FS.forEach(m=>FS_BY_ID[m.id]=m);
+let fstruct=FS[0].id;
+const E_ALL=EDGES.map(e=>({s:e.source,t:e.target}));
+const EW=new Array(E_ALL.length).fill(W_BASE);
 const N=cy.nodes(),sz={},vel={};
 N.forEach(n=>{const bb=n.boundingBox();sz[n.id()]={w:bb.w||40,h:bb.h||22};});
 // Only NON-hidden nodes participate in the force sim. A filtered-out type
@@ -1045,8 +1070,7 @@ function tick(){const pos={},fx={},fy={},arr=ACT;
     const A=sz[ai],B=sz[bi],ox=(A.w+B.w)/2+COL_PAD-Math.abs(dx),oy=(A.h+B.h)/2+COL_PAD-Math.abs(dy);
     if(ox>0&&oy>0){if(ox<=oy){const s=(dx===0?Math.random()-.5:(dx<0?-1:1))*ox*COL_K;fx[ai]+=s;fx[bi]-=s;}
       else{const s=(dy===0?Math.random()-.5:(dy<0?-1:1))*oy*COL_K;fy[ai]+=s;fy[bi]-=s;}}}}
-  E_IO.forEach(e=>spring(pos,fx,fy,e.s,e.t,.02*wIO,IO_L));
-  E_TREE.forEach(e=>spring(pos,fx,fy,e.s,e.t,.05*wTREE,CONT_L));
+  for(let i=0;i<E_ALL.length;i++)spring(pos,fx,fy,E_ALL[i].s,E_ALL[i].t,K_SPRING*EW[i],SPR_E);
   if(radial&&selectedId&&hop){const c=pos[selectedId]||{x:0,y:0};
     arr.forEach(n=>{const id=n.id();if(id===selectedId)return;const tr=((hop[id]!==undefined)?hop[id]:6)*RING;
       let dx=pos[id].x-c.x,dy=pos[id].y-c.y,d=Math.hypot(dx,dy)||.01,f=(tr-d)*radK;fx[id]+=dx/d*f;fy[id]+=dy/d*f;});}
@@ -1177,8 +1201,10 @@ searchEl.addEventListener("input",()=>{clearTimeout(searchT);searchT=setTimeout(
 searchEl.addEventListener("keydown",e=>{if(e.key==="Enter"){clearTimeout(searchT);runSearch();}});
 document.getElementById("jiggle").onclick=()=>reheat(JIGGLE);
 document.getElementById("fit").onclick=()=>cy.fit(undefined,30);
-const fsel=document.getElementById("focus"),str=document.getElementById("strength");
-fsel.onchange=()=>{focus=fsel.value;if(focus==="radial"&&selectedId)computeHop();applyForces(+str.value/100);reheat(10*SEP);};
+const fsel=document.getElementById("fstruct"),str=document.getElementById("strength");
+FS.forEach(m=>{const o=document.createElement("option");o.value=m.id;o.textContent=m.label;fsel.append(o);});
+fsel.value=fstruct;
+fsel.onchange=()=>{fstruct=fsel.value;if(fstruct==="radial"&&selectedId)computeHop();applyForces(+str.value/100);reheat(10*SEP);};
 str.oninput=()=>{applyForces(+str.value/100);reheat(0);};
 const elbl=document.getElementById("elabels"),tlbl=document.getElementById("tlabels");
 const al=()=>cy.batch(()=>cy.edges().forEach(x=>{
