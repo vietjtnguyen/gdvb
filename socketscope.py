@@ -1650,7 +1650,8 @@ const R=12*SEP*Math.sqrt(N.length);  /* start compact and expand outward; a huge
 cy.batch(()=>N.forEach(n=>{n.position({x:(Math.random()-.5)*2*R,y:(Math.random()-.5)*2*R});vel[n.id()]={vx:0,vy:0};}));
 function spring(pos,fx,fy,s,t,k,L){const a=pos[s],b=pos[t];if(!a||!b)return;
   let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.01,f=(d-L)*k,ux=dx/d,uy=dy/d;fx[s]+=ux*f;fy[s]+=uy*f;fx[t]-=ux*f;fy[t]-=uy*f;}
-function tick(){const pos={},fx={},fy={},arr=ACT;
+function tick(){if(paused)return;  // a frame may already be queued when we pause / apply a static layout; bail so it can't step
+  const pos={},fx={},fy={},arr=ACT;
   arr.forEach(n=>{const id=n.id(),p=n.position();pos[id]={x:p.x,y:p.y};fx[id]=0;fy[id]=0;});
   for(let i=0;i<arr.length;i++){const ai=arr[i].id(),pa=pos[ai];for(let j=i+1;j<arr.length;j++){const bi=arr[j].id(),pb=pos[bi];
     let dx=pa.x-pb.x,dy=pa.y-pb.y,d2=dx*dx+dy*dy||.01;
