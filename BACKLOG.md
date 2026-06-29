@@ -24,6 +24,10 @@ Check things off as they land.
       renders a plain tree/DAG JSON, not just socketscope captures)
 - [x] Default type visibility is data-driven (`"hidden": true` per `types[]` entry,
       not hardcoded); the "Edge style" key text comes from a top-level `edge_key`
+- [x] Generalize "Trace chain": generic **Select** tools (All/None/Invert/Grow/
+      Shrink/Walk/Component) hardcoded in the viewer, plus data-driven **Traverse**
+      tools (`traversals` block, endpoint-aware Cytoscape-selector rules + dir +
+      flood/step). Trace chain is now the default traversal tool emitted to the JSON.
 - [x] Start this backlog
 
 ## Collector / data
@@ -48,10 +52,13 @@ Check things off as they land.
 - [ ] **jq-style query box** over the embedded JSON objects — a power-user
       complement to the substring/regex search (the natural next step now that
       the data is already one clean JSON model in the page).
-- [ ] **Trace chain** upgrades:
-  - [ ] hop-limit / depth knob
-  - [ ] seed the trace from a **remote endpoint inward**
-  - [ ] **export the traced chain** (JSON/CSV)
+- [ ] **Traversal-tool polish** (framework now exists; expose in UI):
+  - [ ] surface `mode:step` + `deselectSource` (walk) + `recenter` as per-tool UI
+        toggles / a "Traverse settings" row (currently data-only)
+  - [ ] hop-limit / depth knob (generalize `step` to N hops)
+  - [ ] seed inward from a remote (already expressible: a rule with `dir:"in"`)
+  - [ ] **export the current selection / traced set** (JSON/CSV)
+  - [ ] simple in-viewer editor to add/tweak a traversal rule live
 - [ ] Search results **navigation** (next/prev, center on a match).
 - [ ] **Keyboard shortcuts** (`/` focus search, `esc` clear, `f` fit, …).
 - [ ] **Per-type counts** in the legend.

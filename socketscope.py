@@ -94,6 +94,27 @@ EDGE_KEY = [
     "grey italic = process tree",
 ]
 
+# Data-driven traversal tools, emitted as the model's top-level `traversals` and
+# shown as buttons under "Traverse" in the viewer. Each tool grows the selection
+# along edges matching its rules. A rule's `edge`/`source`/`target` are Cytoscape
+# selectors (the same language as `style`), all optional and AND-ed; multiple
+# rules OR. `dir` is relative to edge orientation: out = source->target,
+# in = target->source, both = either. This is the old hardcoded "Trace chain"
+# expressed as data: follow the process tree DOWN (tree edges, source->target
+# only) and sockets BOTH ways, so a flood never climbs to init. Generic graphs
+# omit this; the viewer's built-in Select tools still work.
+TRAVERSALS = [
+    {
+        "id": "trace",
+        "label": "🔗 Trace chain",
+        "mode": "flood",
+        "rules": [
+            {"edge": "edge.tree", "dir": "out"},
+            {"edge": "edge.io", "dir": "both"},
+        ],
+    },
+]
+
 TCP_STATES = {
     0x01: "ESTABLISHED",
     0x02: "SYN_SENT",
@@ -528,6 +549,7 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
             "types": types,
             "style": DOMAIN_STYLE,
             "edge_key": EDGE_KEY,
+            "traversals": TRAVERSALS,
             "nodes": nodes,
             "edges": edges,
         },
@@ -899,11 +921,15 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
   <div id="status">&#9679; settling&hellip;</div>
   <div class="row"><input type="checkbox" id="elabels" checked><label for="elabels">show edge labels</label></div>
   <div class="row"><input type="checkbox" id="tlabels" checked><label for="tlabels">show tree (&ldquo;parent of&rdquo;) labels</label></div>
-  <h2>Selection &amp; data chain</h2>
-  <button id="flood">&#x1F517; Trace chain</button><button id="pinsel">&#128204; Pin</button><button id="clearsel">&#x2715; Clear</button>
+  <h2>Select</h2>
+  <button id="sel-all">All</button><button id="sel-none">None</button><button id="sel-invert">Invert</button>
+  <button id="sel-grow">Grow</button><button id="sel-shrink">Shrink</button><button id="sel-walk">Walk</button><button id="sel-comp">Component</button>
+  <button id="pinsel">&#128204; Pin</button><button id="clearsel">&#x2715; Clear</button>
   <div class="key">tap = select &middot; shift-tap / shift-drag = multi-select<br>
-    Pin freezes selected nodes in place (dashed amber border)<br>
-    trace follows sockets &amp; child processes, never up to parents</div>
+    Grow/Shrink = expand/erode &middot; Walk = step outward &middot; Component = whole connected group<br>
+    Pin freezes selected nodes in place (dashed amber border)</div>
+  <div id="traversesec"><h2>Traverse</h2><div id="traverse"></div>
+    <div class="key">rule-based selection growth defined in the data</div></div>
   <div id="chaininfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
   <h2>Types - click to filter</h2><div id="legend"></div>
   <div id="edgekeysec"><h2>Edge style</h2><div class="key" id="edgekey"></div></div>
@@ -976,21 +1002,15 @@ let selectedId=null,hop=null,focus="tree",wTREE=2.6,wIO=.5,radial=false,radK=RAD
 const pinned=new Set();  // node ids frozen in place (still exert forces, just don't move)
 const ADJ={};cy.nodes().forEach(n=>ADJ[n.id()]=[]);
 EDGES.forEach(e=>{if(ADJ[e.source]&&ADJ[e.target]){ADJ[e.source].push(e.target);ADJ[e.target].push(e.source);}});
-// Directional adjacency for the "trace chain" flood. The chain follows the DATA
-// path, not the whole tree: down to children (tree source->target only) and
-// laterally through sockets (io edges, both directions: process->socket and
-// socket->other owning processes / remotes / peers). Tree edges are NEVER walked
-// child->parent, so a flood can't climb to init and swallow the whole host.
+// Per-node lookups for the selection / traversal tools. TYPE for hidden checks;
+// INC = every edge touching a node with its orientation (edge ids are "e"+index,
+// matching the cytoscape element ids built above). ADJ (bidirectional, built
+// just above) is reused by the generic topology tools.
 const TYPE={};NODES.forEach(n=>TYPE[n.id]=n.type);
-const CH_TREE={},CH_IO={};cy.nodes().forEach(n=>{CH_TREE[n.id()]=[];CH_IO[n.id()]=[];});
-EDGES.forEach(e=>{
-  if(e.cls==="tree"){if(CH_TREE[e.source])CH_TREE[e.source].push(e.target);}      // parent -> child only
-  else{if(CH_IO[e.source])CH_IO[e.source].push(e.target);if(CH_IO[e.target])CH_IO[e.target].push(e.source);}});
-function floodChain(seeds){const seen=new Set();const q=[];
-  seeds.forEach(s=>{seen.add(s);q.push(s);});
-  for(let i=0;i<q.length;i++){const u=q[i];
-    (CH_TREE[u]||[]).concat(CH_IO[u]||[]).forEach(v=>{if(!seen.has(v)&&!hide.has(TYPE[v])){seen.add(v);q.push(v);}});}
-  return seen;}
+const INC={};NODES.forEach(n=>INC[n.id]=[]);
+EDGES.forEach((e,i)=>{const id="e"+i;
+  if(INC[e.source])INC[e.source].push({e:id,s:e.source,t:e.target});
+  if(INC[e.target])INC[e.target].push({e:id,s:e.source,t:e.target});});
 function applyForces(t){const s=.2+t*t*12;
   if(focus==="flow"){wIO=s;wTREE=.15;radial=false;}
   else if(focus==="radial"){wIO=.3;wTREE=.3;radial=true;radK=RAD_K*(.4+s*.25);}
@@ -1068,16 +1088,58 @@ function scheduleSel(){if(selRAF)return;selRAF=requestAnimationFrame(()=>{selRAF
 cy.on("select unselect","node",()=>{if(suppressSel)return;chainActive=false;scheduleSel();});
 cy.on("tap","node",e=>{selectedId=e.target.id();if(radial){computeHop();reheat(0);}});
 const chaininfo=document.getElementById("chaininfo");
-function doFlood(){const seeds=cy.$("node:selected").map(n=>n.id());
-  if(!seeds.length){chaininfo.textContent="select node(s) first, then trace";return;}
-  const chain=floodChain(seeds);chainActive=true;suppressSel=true;
-  cy.batch(()=>{cy.nodes().unselect();chain.forEach(id=>{const n=cy.getElementById(id);if(n&&n.length)n.select();});});
-  suppressSel=false;applySel();
-  chaininfo.textContent="chain: "+chain.size+" nodes (from "+seeds.length+" seed"+(seeds.length>1?"s":"")+")";}
+const info=m=>{chaininfo.textContent=m;};
+// Replace the selection with an explicit id list and isolate it (chainActive=true
+// => applySel shows exactly the selection + the edges among it, rest faded).
+function setSel(ids){chainActive=true;suppressSel=true;
+  cy.batch(()=>{cy.nodes().unselect();ids.forEach(id=>{const n=cy.getElementById(id);if(n&&n.length)n.select();});});
+  suppressSel=false;applySel();}
 function clearSel(){chainActive=false;suppressSel=true;cy.nodes().unselect();suppressSel=false;applySel();chaininfo.textContent="";
   const se=document.getElementById("search");if(se){se.value="";}const si=document.getElementById("searchinfo");if(si)si.textContent="";}
-document.getElementById("flood").onclick=doFlood;
+
+// --- Generic Select tools: topology only, operate on VISIBLE nodes via ADJ ---
+const curSel=()=>cy.$("node:selected").map(n=>n.id());
+const vnbrs=u=>(ADJ[u]||[]).filter(v=>!hide.has(TYPE[v]));      // visible neighbours
+const visIds=()=>NODES.filter(n=>!hide.has(n.type)).map(n=>n.id);
+document.getElementById("sel-all").onclick=()=>{const a=visIds();setSel(a);info("selected "+a.length);};
+document.getElementById("sel-none").onclick=clearSel;
+document.getElementById("sel-invert").onclick=()=>{const s=new Set(curSel());setSel(visIds().filter(id=>!s.has(id)));};
+document.getElementById("sel-grow").onclick=()=>{const s=new Set(curSel());if(!s.size)return info("select seed(s) first");
+  const o=new Set(s);s.forEach(u=>vnbrs(u).forEach(v=>o.add(v)));setSel([...o]);info("grew to "+o.size);};
+document.getElementById("sel-shrink").onclick=()=>{const s=new Set(curSel());if(!s.size)return info("nothing selected");
+  setSel([...s].filter(u=>vnbrs(u).every(v=>s.has(v))));};   /* erosion: drop nodes touching the outside */
+document.getElementById("sel-walk").onclick=()=>{const s=new Set(curSel());if(!s.size)return info("select seed(s) first");
+  const o=new Set();s.forEach(u=>vnbrs(u).forEach(v=>{if(!s.has(v))o.add(v);}));setSel([...o]);info("walked to "+o.size);};
+document.getElementById("sel-comp").onclick=()=>{const s=curSel();if(!s.length)return info("select seed(s) first");
+  const seen=new Set(s);let fr=s.slice();while(fr.length){const nx=[];fr.forEach(u=>vnbrs(u).forEach(v=>{if(!seen.has(v)){seen.add(v);nx.push(v);}}));fr=nx;}
+  setSel([...seen]);info("component: "+seen.size);};
 document.getElementById("clearsel").onclick=clearSel;
+
+// --- Data-driven Traversal tools: grow the selection along edges matching rules.
+// Each rule's edge/source/target are Cytoscape selectors (same language as style),
+// all optional + AND-ed; multiple rules OR; dir is relative to edge orientation. ---
+function runTraversal(tool){const seeds=curSel();if(!seeds.length)return info("select seed(s) first");
+  const rules=(tool.rules||[]).map(r=>({dir:r.dir||"both",
+    es:r.edge?new Set(cy.edges(r.edge).map(e=>e.id())):null,
+    ss:r.source?new Set(cy.nodes(r.source).map(n=>n.id())):null,
+    ts:r.target?new Set(cy.nodes(r.target).map(n=>n.id())):null}));
+  const cross=(inc,u)=>{for(const r of rules){
+    if(r.es&&!r.es.has(inc.e))continue; if(r.ss&&!r.ss.has(inc.s))continue; if(r.ts&&!r.ts.has(inc.t))continue;
+    if((r.dir==="out"||r.dir==="both")&&u===inc.s)return inc.t;
+    if((r.dir==="in"||r.dir==="both")&&u===inc.t)return inc.s;}
+    return null;};
+  const seen=new Set(seeds);
+  const expand=fr=>{const nx=[];fr.forEach(u=>(INC[u]||[]).forEach(inc=>{const f=cross(inc,u);
+    if(f!=null&&!hide.has(TYPE[f])&&!seen.has(f)){seen.add(f);nx.push(f);}}));return nx;};
+  if(tool.mode==="step"){expand(seeds.slice());}else{let fr=seeds.slice();while(fr.length)fr=expand(fr);}
+  let result=[...seen];if(tool.deselectSource)result=result.filter(id=>seeds.indexOf(id)<0);
+  setSel(result);
+  if(tool.recenter){framed=true;const sc=cy.$("node:selected");if(sc.length)cy.fit(sc,60);}
+  info((tool.label||tool.id)+": "+result.length+" node"+(result.length===1?"":"s"));}
+const TRAVERSALS=DATA.traversals||[],tdiv=document.getElementById("traverse");
+if(TRAVERSALS.length){TRAVERSALS.forEach(t=>{const b=document.createElement("button");
+  b.textContent=t.label||t.id;b.onclick=()=>runTraversal(t);tdiv.append(b);});}
+else{const ts=document.getElementById("traversesec");if(ts)ts.style.display="none";}
 // Pin freezes selected nodes in place (they still exert forces, just don't move).
 // Mixed-toggle: if any selected node is unpinned, pin them all; once all are
 // pinned, the next press unpins them all (mixed -> all on -> all off -> all on).
