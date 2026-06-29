@@ -61,6 +61,17 @@ Check things off as they land.
       are off) and an `other` catch-all for uncataloged classes. Also de-socketed the
       tree-label toggle (triage #1) — hiding tree-edge labels is now just hiding the
       `tree` edge class. Breaking change; v0, no back-compat.
+- [x] **`cmake_graph.py` generator** (standalone). Reads CMake's File API codemodel-v2
+      from a configured build dir and emits the target/dependency/source graph as JSON,
+      piped to `render` — the first generator that lives *outside* socketscope.py,
+      validating the "model is the seam" architecture. Targets classed by type; `link`
+      (target→dep) + `source` (target→file) edges; source nodes start hidden. A real
+      dependency DAG, so Topo BFS + "Depended on by" shine.
+- [ ] **LSP symbol/call-graph generator** (clangd-first, standalone) — the next big one.
+      Fully scoped in memory `project_socketscope_lsp_generator.md`: drive an LSP server
+      over stdio JSON-RPC, build call/type-hierarchy + reference graphs, seed+bounded to
+      avoid hairballs. Test-ready against `orchard/` (clangd 14 + compile_commands.json
+      present). Deferred behind the CMake generator.
 - [x] Start this backlog
 
 ## Collector / data

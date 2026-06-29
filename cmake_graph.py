@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""cmake_graph - emit a CMake project's target/dependency/source graph as JSON.
+
+A standalone generator for the socketscope viewer. It reads CMake's File API
+(codemodel-v2) from a configured build directory and prints ONE JSON graph model
+to stdout - the same generic model socketscope's own `sockets`/`dirtree` produce.
+It does NOT import socketscope.py; the JSON model is the only contract. Pipe it
+to the viewer:
+
+    cmake_graph.py <build-dir> | socketscope.py render - > cmake.html
+
+Nodes are targets (classed by type) and, by default, their source files; edges
+are target->target dependencies and target->source. The result is a real
+dependency DAG, so the viewer's trace traversals ("depended on by") and the
+Topo BFS static layout are the natural tools.
+
+Stdlib only. Requires `cmake` on PATH (>=3.14 for the File API) unless
+--no-configure is given against a build dir that already has a reply.
+"""
+import os
+import sys
+import glob
+import json
+import socket
+import argparse
+import datetime
+import subprocess
+
+# CMake target type -> our node class id.
+TYPE_CLASS = {
+    "STATIC_LIBRARY": "static-library",
+    "SHARED_LIBRARY": "shared-library",
+    "MODULE_LIBRARY": "module-library",
+    "OBJECT_LIBRARY": "object-library",
+    "INTERFACE_LIBRARY": "interface-library",
+    "EXECUTABLE": "executable",
+    "UTILITY": "utility",
+}
+
+# Class catalogs (color/legend/visibility). Source files start hidden so the
+# first view is the clean target DAG; toggle "source" in the node legend to
+# reveal the 100s of files. `source` node class is light; library/exe/utility
+# get distinct colors.
+NODE_CLASSES = [
+    {"id": "executable", "label": "Executable", "color": "#E0533F"},
+    {"id": "static-library", "label": "Static library", "color": "#3F8EE0"},
+    {"id": "shared-library", "label": "Shared library", "color": "#2FA86E"},
+    {"id": "module-library", "label": "Module library", "color": "#5E8C6A"},
+    {"id": "object-library", "label": "Object library", "color": "#7E869B"},
+    {"id": "interface-library", "label": "Interface library", "color": "#C9A227"},
+    {"id": "utility", "label": "Utility / custom", "color": "#8A63D2"},
+    {"id": "source", "label": "Source file", "color": "#AAB2C0", "hidden": True},
+]
+
+# `link` (target->target dependency) is the prominent edge; `source`
+# (target->file) is light/thin and starts hidden alongside the source nodes.
+EDGE_CLASSES = [
+    {"id": "link", "label": "depends on", "color": "#5566AA"},
+    {"id": "source", "label": "compiles", "color": "#CBD2DD", "hidden": True},
+]
+
+STYLE = [
+    {
+        "selector": "edge.link",
+        "style": {"width": 2, "line-color": "#5566AA", "target-arrow-color": "#5566AA"},
+    },
+    {"selector": "edge.source", "style": {"width": 1}},
+    # Make libraries read as the structural hubs.
+    {
+        "selector": "node.static-library, node.shared-library",
+        "style": {"border-width": 3, "border-color": "#333"},
+    },
+]
+
+EDGE_KEY = [
+    "→ arrowhead = direction",
+    "thick blue = depends on (link)",
+    "thin = source file",
+]
+
+TRAVERSALS = [
+    {
+        "id": "depends",
+        "label": "⬇ Depends on",
+        "mode": "flood",
+        "rules": [{"edge": "edge.link", "dir": "out"}],
+    },
+    {
+        "id": "dependents",
+        "label": "⬆ Depended on by",
+        "mode": "flood",
+        "rules": [{"edge": "edge.link", "dir": "in"}],
+    },
+    {
+        "id": "sources",
+        "label": "📄 Sources",
+        "mode": "flood",
+        "rules": [{"edge": "edge.source", "dir": "out"}],
+    },
+]
+
+FORCE_STRUCTURES = [
+    {"id": "links", "label": "link graph", "emphasize": "edge.link"},
+]
+
+
+def _reply_dir(build):
+    return os.path.join(build, ".cmake", "api", "v1")
+
+
+def ensure_reply(build, configure, config_unused):
+    """Make sure a codemodel-v2 reply exists; return the reply directory.
+    Drops a query file and (unless configure is False) reconfigures the build
+    dir to regenerate the File API reply."""
+    api = _reply_dir(build)
+    qdir = os.path.join(api, "query")
+    if configure:
+        os.makedirs(qdir, exist_ok=True)
+        open(os.path.join(qdir, "codemodel-v2"), "a").close()
+        try:
+            subprocess.run(
+                ["cmake", build],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+        except FileNotFoundError:
+            raise SystemExit("cmake_graph: `cmake` not found on PATH")
+        except subprocess.CalledProcessError as e:
+            raise SystemExit(
+                "cmake_graph: `cmake %s` failed (%s). Is it a configured build "
+                "dir? Try configuring first, or pass --no-configure." % (build, e)
+            )
+    reply = os.path.join(api, "reply")
+    if not os.path.isdir(reply) or not glob.glob(os.path.join(reply, "index-*.json")):
+        raise SystemExit(
+            "cmake_graph: no File API reply in %s. Run without --no-configure, "
+            "or configure the project first (cmake -S <src> -B %s)." % (reply, build)
+        )
+    return reply
+
+
+def load_codemodel(reply, config):
+    index = sorted(glob.glob(os.path.join(reply, "index-*.json")))[-1]
+    idx = json.load(open(index))
+    try:
+        cm_file = idx["reply"]["codemodel-v2"]["jsonFile"]
+    except KeyError:
+        raise SystemExit("cmake_graph: codemodel-v2 missing from the File API reply")
+    cm = json.load(open(os.path.join(reply, cm_file)))
+    configs = cm["configurations"]
+    cfg = configs[0]
+    if config:
+        cfg = next((c for c in configs if c["name"] == config), None)
+        if cfg is None:
+            raise SystemExit(
+                "cmake_graph: no configuration %r (have: %s)"
+                % (config, ", ".join(c["name"] for c in configs))
+            )
+    return cm, cfg
+
+
+def build_model(reply, cm, cfg, want_sources):
+    src_root = cm.get("paths", {}).get("source", "")
+    targets = [
+        json.load(open(os.path.join(reply, t["jsonFile"]))) for t in cfg["targets"]
+    ]
+    id2name = {t["id"]: t["name"] for t in targets}
+
+    nodes, edges, seen = [], [], set()
+
+    def add_node(nid, node):
+        if nid in seen:
+            return
+        seen.add(nid)
+        nodes.append(node)
+
+    for t in targets:
+        tcls = TYPE_CLASS.get(t["type"], t["type"].lower().replace("_", "-"))
+        deps = [id2name.get(d["id"], d["id"]) for d in t.get("dependencies", [])]
+        srcs = t.get("sources", [])
+        full = "%s\n%s\nsources: %d   depends: %s" % (
+            t["name"],
+            t["type"],
+            len(srcs),
+            ", ".join(deps) if deps else "(none)",
+        )
+        add_node(
+            "t:" + t["name"],
+            {
+                "id": "t:" + t["name"],
+                "label": t["name"],
+                "full": full,
+                "classes": [tcls],
+            },
+        )
+
+    for t in targets:
+        for d in t.get("dependencies", []):
+            dn = id2name.get(d["id"])
+            if dn is None:
+                continue
+            edges.append(
+                {
+                    "source": "t:" + t["name"],
+                    "target": "t:" + dn,
+                    "label": "depends on",
+                    "classes": ["link"],
+                }
+            )
+        if want_sources:
+            for s in t.get("sources", []):
+                path = s["path"]
+                fid = "f:" + path
+                add_node(
+                    fid,
+                    {
+                        "id": fid,
+                        "label": os.path.basename(path) or path,
+                        "full": os.path.join(src_root, path),
+                        "classes": ["source"],
+                    },
+                )
+                edges.append(
+                    {
+                        "source": "t:" + t["name"],
+                        "target": fid,
+                        "label": "compiles",
+                        "classes": ["source"],
+                    }
+                )
+
+    edge_ids = {n["id"] for n in nodes}
+    edges = [e for e in edges if e["source"] in edge_ids and e["target"] in edge_ids]
+
+    project = (cfg.get("projects") or [{}])[0].get("name") or "project"
+    meta = {
+        "title": "cmake — " + project,
+        "subtitle": "%s · %s"
+        % (cfg.get("name", "?"), cm.get("paths", {}).get("build", "")),
+        "host": socket.gethostname(),
+        "captured": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "counts": {"nodes": len(nodes), "edges": len(edges)},
+    }
+    return {
+        "meta": meta,
+        "node_classes": NODE_CLASSES,
+        "edge_classes": EDGE_CLASSES,
+        "style": STYLE,
+        "edge_key": EDGE_KEY,
+        "traversals": TRAVERSALS,
+        "force_structures": FORCE_STRUCTURES,
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="cmake_graph",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Emit a CMake project's target/dependency/source graph as JSON for\n"
+            "the socketscope viewer. Reads the CMake File API from a configured\n"
+            "build directory. Pipe to: socketscope.py render -"
+        ),
+        epilog=(
+            "examples:\n"
+            "  cmake_graph.py build | socketscope.py render - > cmake.html\n"
+            "  cmake_graph.py build --no-sources | socketscope.py render -\n"
+        ),
+    )
+    ap.add_argument("build", help="configured CMake build directory")
+    ap.add_argument(
+        "--no-sources",
+        action="store_true",
+        help="omit source-file nodes (just the target dependency DAG)",
+    )
+    ap.add_argument(
+        "--no-configure",
+        action="store_true",
+        help="don't run cmake; read an existing File API reply as-is",
+    )
+    ap.add_argument(
+        "--config",
+        default=None,
+        metavar="NAME",
+        help="configuration to use (default: the first, e.g. Debug)",
+    )
+    args = ap.parse_args()
+
+    if not os.path.isdir(args.build):
+        ap.error("not a directory: %s" % args.build)
+
+    reply = ensure_reply(args.build, not args.no_configure, args.config)
+    cm, cfg = load_codemodel(reply, args.config)
+    model = build_model(reply, cm, cfg, not args.no_sources)
+
+    json.dump(model, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    c = model["meta"]["counts"]
+    print(
+        "cmake_graph: %s — %d nodes, %d edges (config %s)%s"
+        % (
+            model["meta"]["title"],
+            c["nodes"],
+            c["edges"],
+            cfg.get("name", "?"),
+            "" if not args.no_sources else " [no sources]",
+        ),
+        file=sys.stderr,
+    )
+
+
+if __name__ == "__main__":
+    main()

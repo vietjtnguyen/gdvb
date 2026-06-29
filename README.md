@@ -92,6 +92,25 @@ Relative entries resolve against **`-C`/`--directory`** (default: the current di
 git -C ~/project ls-files | socketscope.py dirtree - -C ~/project -o repo
 ```
 
+### Other generators (the model is the seam)
+
+The viewer renders one generic JSON model, so anything that emits that shape can be
+visualized — the generator doesn't even need to live in this script. **`cmake_graph.py`**
+is a standalone example: it reads a CMake project's [File API](https://cmake.org/cmake/help/latest/manual/cmake-file-api.7.html)
+and emits the target/dependency/source graph, then pipes to `render`:
+
+```bash
+cmake_graph.py build | socketscope.py render - > cmake.html   # targets, deps, source files
+cmake_graph.py build --no-sources | socketscope.py render -   # just the dependency DAG
+```
+
+Targets are colored by type (executable / static-library / …), edges are `link`
+(target→dependency) and `source` (target→file); it's a real dependency **DAG**, so the
+**Topo BFS** static layout and the *Depended on by* traversal (impact analysis) are the
+natural tools. Source-file nodes start hidden — toggle the **source** node class on to
+reveal them. This generator imports nothing from `socketscope.py`; the JSON model is the
+only contract.
+
 ### Filtering at capture time
 
 `--ignore` drops node classes from the data entirely (smaller file, less clutter). You can also just hide/show classes live in the viewer's legend after the fact. Class ids: `proc-root`, `proc-user`, `proc-kernel`, `tcp`, `udp`, `unix`, `unix-unnamed`, `remote`. Run `socketscope.py --help` for the convenience flags (`--ignore-uds`, `--ignore-kernel`, …).
