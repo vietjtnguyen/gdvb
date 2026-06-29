@@ -42,13 +42,15 @@ sudo python3 socketscope.py --json --no-html -o - | jq .   # stream JSON to a pi
 socketscope.py --ignore-uds -o net                   # unprivileged -> net.html
 ```
 
+There are three subcommands — **`sockets`** (capture from `/proc`, the default), **`dirtree`** (walk a directory tree), and **`render`** (rebuild HTML from a saved snapshot). Running with **no subcommand is the same as `sockets`**, so the historical usage above is unchanged.
+
 **Run as root (`sudo`) for the full picture.** Unprivileged, the kernel only lets you see the file descriptors of your *own* processes, so most sockets can't be attributed to a process. socketscope still works — it just shows less, and prints a hint to re-run with `sudo`. The capture summary always reports how many sockets it couldn't attribute.
 
 It's a **snapshot** — re-run it any time to refresh.
 
 ### Output
 
-By default socketscope writes one file, **`socketscope-<timestamp>.html`**, so repeated runs don't overwrite each other. `-o NAME` sets the base name and the `.html`/`.json` extension is appended for you (a name you type *with* an extension is accepted too). Add **`--json`** to also write the raw graph model as `<base>.json`, **`--no-html`** to skip the viewer, and **`-o -`** to stream a single artifact to stdout — so `socketscope.py --json --no-html -o - | jq` works for scripting. The human-readable capture summary always goes to **stderr**, keeping stdout clean for piping. The JSON is the same `{meta, types, nodes, edges}` model the viewer's "Download data" button produces.
+By default socketscope writes one file, **`socketscope-<timestamp>.html`**, so repeated runs don't overwrite each other. `-o NAME` sets the base name and the `.html`/`.json` extension is appended for you (a name you type *with* an extension is accepted too). Add **`--json`** to also write the raw graph model as `<base>.json`, **`--no-html`** to skip the viewer, and **`-o -`** to stream a single artifact to stdout — so `socketscope.py --json --no-html -o - | jq` works for scripting. The human-readable capture summary always goes to **stderr**, keeping stdout clean for piping. The JSON is the same `{meta, types, style, edge_key, traversals, force_structures, nodes, edges}` model the viewer's "Download data" button produces.
 
 ### Rendering a saved snapshot
 
@@ -62,6 +64,33 @@ socketscope.py --json --no-html -o - | socketscope.py render   # capture | rende
 ```
 
 `render` is a plain filter: it reads the snapshot from a **file argument** or, if omitted (or given `-`), from **stdin**, and writes HTML to **stdout** unless you pass `-o NAME` (→ `NAME.html`). It polls nothing, so it needs no privileges; the rendered HTML reflects the snapshot's *original* host and capture time. Because the model fully determines the output, `render` of a capture's `.json` reproduces that capture's `.html` exactly.
+
+### Visualizing a directory tree
+
+The viewer's data model is a generic typed directed graph, not a socket-specific one. The **`dirtree`** subcommand demonstrates that (and is handy in its own right): it walks a directory into the **same** model — nodes are directories, files, and symlinks; edges are parent→child containment, plus a **distinct dashed edge** from each symlink to its target when the target is in view.
+
+```bash
+socketscope.py dirtree ~/project -o tree     # -> tree.html
+socketscope.py dirtree / --max-depth 3        # shallow, whole-system
+socketscope.py dirtree . --no-files           # directories only
+socketscope.py dirtree ~/project --json --no-html -o - | socketscope.py render   # dirtree | render
+```
+
+It ships its own styling and exploration tools, all carried in the JSON: executable files get a green border; the **Descendants** / **Path to root** traverse tools walk down/up the tree; and a **directory skeleton** force structure contracts the subdirectory edges so files dangle off the directory backbone. Each node also carries `size`, `mtime`/`ctime`, owner `user`/`group`, and `perms` (shown in the tooltip; reserved for future colormap layers). `--max-entries` (default 2000) caps the node count, truncating breadth-first so the result stays a connected tree near the root; symlinked directories aren't recursed into unless you pass `--follow-symlinks`.
+
+**Feeding it a specific set of paths.** Pass `-` as the path and `dirtree` reads a newline-separated path list from **stdin** instead of walking the filesystem, synthesizing the directory ancestors needed to connect them into one tree. This keeps `dirtree` free of any VCS/ignore logic and lets you compose it with whatever tool already knows which paths matter:
+
+```bash
+git ls-files | socketscope.py dirtree - -o repo      # only Git-tracked files (respects .gitignore)
+find . -name '*.py' | socketscope.py dirtree -        # just the Python sources
+fd -t f --changed-within 1d | socketscope.py dirtree -   # recently-touched files
+```
+
+Relative entries resolve against **`-C`/`--directory`** (default: the current directory), which also becomes the tree root. This matters when the list is relative to somewhere other than your cwd — notably `git ls-files`, which prints paths relative to the **repo root**:
+
+```bash
+git -C ~/project ls-files | socketscope.py dirtree - -C ~/project -o repo
+```
 
 ### Filtering at capture time
 

@@ -34,6 +34,17 @@ Check things off as they land.
       block, each emphasizes an edge selector; spring weighting unified to one
       per-edge weight; built-in `spread` + `distance from selected`. This was the last
       domain-coupled viewer feature — the viewer is now fully generic over the JSON.
+- [x] **`dirtree` subcommand** — a second, non-socket model generator that walks a
+      directory tree (nodes = files/dirs/symlinks, edges = containment + distinct
+      symlink→target edges) into the same generic model, proving the viewer is
+      domain-agnostic. CLI restructured into `sockets`/`dirtree`/`render`; bare
+      invocation still defaults to `sockets`. Carries dirtree-specific `style`
+      (exec files, dashed symlinks), traversals (Descendants / Path to root), and a
+      `directory skeleton` force structure, plus per-node `size`/`mtime`/`ctime`/
+      `user`/`group`/`perms`/`exec` metadata. Passing `-` reads a newline-separated
+      path list from stdin (ancestors synthesized to connect them), so filtering —
+      gitignore, etc. — is delegated to the upstream tool (`git ls-files | … dirtree -`)
+      rather than reimplemented here.
 - [x] Start this backlog
 
 ## Collector / data
@@ -55,6 +66,12 @@ Check things off as they land.
 
 ## Viewer / UX
 
+- [ ] **Visualization layers** — a first-class JSON concept alongside `style` /
+      `traversals` / `force_structures` that activates data→appearance mappings:
+      e.g. map a numeric node field to a colormap (`size` → fill, `mtime` → heat),
+      or scale node size by a metric, toggleable from a viewer control. dirtree
+      already emits the numeric fields (`size`, `mtime`, `ctime`) such a layer
+      would consume; sockets could expose connection/socket counts the same way.
 - [ ] **jq-style query box** over the embedded JSON objects — a power-user
       complement to the substring/regex search (the natural next step now that
       the data is already one clean JSON model in the page).

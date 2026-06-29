@@ -1,6 +1,8 @@
-# Generated snapshots (contain a picture of the host's processes/sockets — keep local)
+# Generated snapshots (contain a picture of the host's processes/sockets/files — keep local)
 socketscope-*.html
 socketscope-*.json
+dirtree-*.html
+dirtree-*.json
 /sockets.html
 
 # Python
