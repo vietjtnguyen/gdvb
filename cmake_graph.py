@@ -50,6 +50,13 @@ NODE_CLASSES = [
     {"id": "interface-library", "label": "Interface library", "color": "#C9A227"},
     {"id": "utility", "label": "Utility / custom", "color": "#8A63D2"},
     {"id": "source", "label": "Source file", "color": "#AAB2C0", "hidden": True},
+    # CMake-internal generated placeholders (.rule files, custom-command stubs).
+    {
+        "id": "generated",
+        "label": "Generated (CMake)",
+        "color": "#C7BFA8",
+        "hidden": True,
+    },
 ]
 
 # `link` (target->target dependency) is the prominent edge; `source`
@@ -57,6 +64,7 @@ NODE_CLASSES = [
 EDGE_CLASSES = [
     {"id": "link", "label": "depends on", "color": "#5566AA"},
     {"id": "source", "label": "compiles", "color": "#CBD2DD", "hidden": True},
+    {"id": "generated", "label": "generates", "color": "#DAD3C0", "hidden": True},
 ]
 
 STYLE = [
@@ -212,13 +220,19 @@ def build_model(reply, cm, cfg, want_sources):
             for s in t.get("sources", []):
                 path = s["path"]
                 fid = "f:" + path
+                # CMake flags its internal placeholders (custom-command .rule files
+                # etc.) as isGenerated. Put them in a separate `generated` class so
+                # they can be hidden independently of real sources (OR-visibility
+                # means a single `source`+`generated` node couldn't be hidden while
+                # `source` is shown).
+                cls = "generated" if s.get("isGenerated") else "source"
                 add_node(
                     fid,
                     {
                         "id": fid,
                         "label": os.path.basename(path) or path,
                         "full": os.path.join(src_root, path),
-                        "classes": ["source"],
+                        "classes": [cls],
                     },
                 )
                 edges.append(
@@ -226,7 +240,7 @@ def build_model(reply, cm, cfg, want_sources):
                         "source": "t:" + t["name"],
                         "target": fid,
                         "label": "compiles",
-                        "classes": ["source"],
+                        "classes": [cls],
                     }
                 )
 
