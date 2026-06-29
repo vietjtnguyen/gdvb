@@ -1832,14 +1832,14 @@ function buildLegend(boxId,secId,catalog,decl,hideSet,info){
   const box=document.getElementById(boxId);
   const mk=(id,label,color)=>{const r=document.createElement("div");r.className="row";
     const c=document.createElement("input");c.type="checkbox";c.checked=!hideSet.has(id);
-    // Colored class -> filled swatch; colorless class (modifier / source-colored)
-    // -> a transparent spacer so no white box shows but labels still line up.
-    const s=document.createElement("span");
-    if(color){s.className="sw";s.style.background=color;}
-    else{s.style.width="13px";s.style.flex="0 0 auto";}
     const b=document.createElement("label");b.textContent=label;
     c.onchange=()=>{c.checked?hideSet.delete(id):hideSet.add(id);applyVis();reheat(8*SEP);};
-    b.onclick=()=>{c.checked=!c.checked;c.onchange();};r.append(c,s,b);box.append(r);};
+    b.onclick=()=>{c.checked=!c.checked;c.onchange();};
+    r.append(c);
+    // Colored class -> filled swatch; colorless class (modifier / source-colored)
+    // -> no swatch element at all (label sits right after the checkbox).
+    if(color){const s=document.createElement("span");s.className="sw";s.style.background=color;r.append(s);}
+    r.append(b);box.append(r);};
   let rows=0;
   catalog.forEach(t=>{if(info.present.has(t.id)){mk(t.id,t.label||t.id,t.color);rows++;}});
   if(info.other){mk(OTHER,"other",null);rows++;}
