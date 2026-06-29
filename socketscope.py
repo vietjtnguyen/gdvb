@@ -634,7 +634,13 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
 
     types = [t for t in TYPES if t["id"] not in ignore]
     captured = captured or datetime.datetime.now().astimezone()
+    # title/subtitle are viewer presentation hints (tab title, header chip), kept
+    # in the data so the viewer hardcodes no socket-specific wording.
     meta = {
+        "title": "socketscope — Linux sockets & processes",
+        "subtitle": (
+            "root — full visibility" if is_root else "unprivileged — own processes only"
+        ),
         "host": socket.gethostname(),
         "captured": captured.isoformat(timespec="seconds"),
         "root": is_root,
@@ -796,6 +802,7 @@ def _dt_finalize(root, nodes, edges, node_ids, pending_symlinks, truncated):
         counts["by_class"][key] = counts["by_class"].get(key, 0) + 1
 
     meta = {
+        "title": "socketscope — " + root,
         "host": socket.gethostname(),
         "captured": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "root_path": root,
@@ -1425,7 +1432,7 @@ def main():
         do_capture(args, ap)
 
 
-HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>socketscope — Linux socket &amp; process graph</title>
+HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>socketscope</title>
 <style>
  html,body{margin:0;height:100%;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#fbfbfd;color:#222}
  #wrap{display:flex;height:100vh}#net{flex:1;background:#fbfbfd}
@@ -1438,15 +1445,17 @@ HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><
       padding:7px 9px;border-radius:6px;white-space:pre-wrap;pointer-events:none;z-index:9}
  #status{font-size:11.5px;color:#555;margin:4px 0}
  #count{font-size:12px;color:#444}.host{font-size:12px;color:#666;margin:2px 0 6px}
+ .title{font-size:13px;font-weight:600;color:#333;margin:0 0 2px;word-break:break-word}
  .key{font-size:11px;color:#777;line-height:1.5}
 </style></head><body>
 <div id="tip"></div>
 <div id="wrap"><div id="net"></div><div id="side">
+  <div class="title" id="title"></div>
   <div class="host" id="host"></div>
   <div id="count"></div>
   <h2>Search</h2>
   <input type="text" id="search" autocomplete="off" spellcheck="false"
-    placeholder="label, cmdline, addr&hellip;  or /regex/i"
+    placeholder="label, text, id&hellip;  or /regex/i"
     style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:6px;font:inherit">
   <div id="searchinfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
   <h2>Force layout (live)</h2>
@@ -1724,7 +1733,7 @@ function runSearch(){const raw=searchEl.value.trim();
   searchInfo.style.color="#1f6feb";
   const ids=[];NODES.forEach(n=>{if(!hide.has(n.type)&&test(n.id))ids.push(n.id);});
   setSel(ids);
-  searchInfo.textContent=ids.length+" match"+(ids.length===1?"":"es")+(ids.length?" · selected (Trace chain to expand)":"");
+  searchInfo.textContent=ids.length+" match"+(ids.length===1?"":"es")+(ids.length?" · selected (Traverse to expand)":"");
   framed=true;const sel=cy.$("node:selected");if(sel.length){cy.fit(sel,80);if(cy.zoom()>1.6)cy.zoom(1.6);}}
 let searchT=0;
 searchEl.addEventListener("input",()=>{clearTimeout(searchT);searchT=setTimeout(runSearch,160);});
@@ -1740,7 +1749,9 @@ const elbl=document.getElementById("elabels"),tlbl=document.getElementById("tlab
 const al=()=>cy.batch(()=>cy.edges().forEach(x=>{
   const on=elbl.checked&&(x.hasClass("tree")?tlbl.checked:true);x.toggleClass("showlabel",on);}));
 elbl.onchange=al;tlbl.onchange=al;al();
-document.getElementById("host").textContent=[META.host,META.captured,META.host?(META.root?"root":"unprivileged"):null].filter(Boolean).join("  ·  ");
+document.title=META.title||"socketscope";
+{const tl=document.getElementById("title");if(META.title)tl.textContent=META.title;else tl.style.display="none";}
+document.getElementById("host").textContent=[META.host,META.captured,META.subtitle].filter(Boolean).join("  ·  ");
 // Edge-style key is data-driven (DATA.edge_key, plain-text lines via textContent);
 // the whole section hides when a graph doesn't supply one.
 const EDGEKEY=DATA.edge_key||[],eksec=document.getElementById("edgekeysec");
@@ -1751,7 +1762,7 @@ else if(eksec){eksec.style.display="none";}
 document.getElementById("dljson").onclick=()=>{
   const blob=new Blob([JSON.stringify(DATA,null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob),a=document.createElement("a");
-  a.href=url;a.download="socketscope-"+(META.host||"snapshot")+".json";
+  a.href=url;a.download=(META.title?META.title.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,""):("graph-"+(META.host||"snapshot")))+".json";
   document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),0);};
 const countEl=document.getElementById("count");
 function updateCount(){const vis=NODES.reduce((a,n)=>a+(hide.has(n.type)?0:1),0);

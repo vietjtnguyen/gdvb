@@ -45,6 +45,12 @@ Check things off as they land.
       path list from stdin (ancestors synthesized to connect them), so filtering —
       gitignore, etc. — is delegated to the upstream tool (`git ls-files | … dirtree -`)
       rather than reimplemented here.
+- [x] **Make the viewer truly field-generic.** It previously copied only a fixed
+      allowlist (`id/label/full/type/listen`) into Cytoscape element data, so custom
+      fields couldn't drive selectors — `listen` was hardcoded and dirtree's
+      `node[exec="yes"]` rule silently never matched. Now every scalar node/edge field
+      is spread into element data (booleans coerced to `yes`/`no`), so `style`/traversal
+      selectors can key on anything a generator emits.
 - [x] Start this backlog
 
 ## Collector / data
@@ -107,9 +113,11 @@ Check things off as they land.
 - [ ] Easy install story (download URL / release); shebang + `chmod +x` already work.
 - [ ] `CHANGELOG.md` + version string.
 - [ ] **Document the JSON schema** (`SCHEMA.md`): the generic typed-directed-graph
-      format — `{meta, types, style, nodes, edges}`, the `<prefix>:<id>` convention,
-      `cls`/`dir`/`listen`, and the `style` stylesheet — so it can be reused/produced
-      by other tools.
+      model, so other tools can produce/consume it. This is *the* ecosystem seam
+      (generators emit JSON and pipe to `render`; they don't import socketscope.py).
+      Deferred until the model settles — the upcoming multi-class `node_classes`/
+      `edge_classes` refactor will reshape it, so writing it now is premature (a first
+      draft was removed for that reason).
 
 ## Quality / engineering
 
