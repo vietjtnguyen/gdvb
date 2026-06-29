@@ -61,11 +61,13 @@ NODE_CLASSES = [
     {"id": "remote", "label": "Remote endpoint", "color": "#D46BB0"},
 ]
 
-# Edge classes. `io` edges are recolored per-source by DOMAIN_STYLE (data(col)),
-# so the catalog color here is just the legend swatch / fallback.
+# Edge classes. `io` has no catalog color on purpose: DOMAIN_STYLE recolors io
+# edges per source node (data(col)), so io has no single color — declaring one
+# would only mislead the legend swatch. A catalog color means "renders in this
+# color"; classes recolored by `style` (or with no fixed color) omit it.
 EDGE_CLASSES = [
     {"id": "tree", "label": "process tree", "color": "#c3c8d0"},
-    {"id": "io", "label": "I/O (socket)", "color": "#9aa0a6"},
+    {"id": "io", "label": "I/O (socket)"},
 ]
 
 # Domain-specific appearance, emitted as the model's `style` block. These rules
