@@ -1824,13 +1824,15 @@ function topoBFS(){
   const XG=maxW+90,YG=maxH+22,byL={};
   S.forEach(id=>{const L=layer[id]||0;(byL[L]=byL[L]||[]).push(id);});
   // Target positions (relative to origin), then translate the whole layout so its
-  // centroid matches the selection's CURRENT centroid - the laid-out content stays
-  // where it already is, so the camera/viewport doesn't jump (no fit needed).
+  // centroid lands at the CURRENT viewport center - the result always appears
+  // centered in whatever you're looking at, and the camera never moves (no fit,
+  // no jump). Anchoring to the selection's model centroid instead would land at
+  // ~origin when the selection is scattered or you've panned away.
   const np={};Object.keys(byL).forEach(L=>{const arr=byL[L];
     arr.forEach((id,i)=>np[id]={x:L*XG,y:(i-(arr.length-1)/2)*YG});});
-  let cx0=0,cy0=0,cx1=0,cy1=0;S.forEach(id=>{const p=cy.getElementById(id).position();
-    cx0+=p.x;cy0+=p.y;cx1+=np[id].x;cy1+=np[id].y;});
-  const cnt=S.length,dx=(cx0-cx1)/cnt,dy=(cy0-cy1)/cnt;
+  const ext=cy.extent(),tcx=(ext.x1+ext.x2)/2,tcy=(ext.y1+ext.y2)/2;
+  let cx1=0,cy1=0;S.forEach(id=>{cx1+=np[id].x;cy1+=np[id].y;});
+  const cnt=S.length,dx=tcx-cx1/cnt,dy=tcy-cy1/cnt;
   cy.batch(()=>S.forEach(id=>{cy.getElementById(id).position({x:np[id].x+dx,y:np[id].y+dy});
     if(vel[id])vel[id]={vx:0,vy:0};}));
   // Freeze: a static layout must stop the sim, reflected in the pause toggle.
