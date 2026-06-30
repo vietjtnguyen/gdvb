@@ -43,9 +43,16 @@ Check things off as they land.
       reads a newline-separated path list from stdin (ancestors synthesized to connect
       them), so filtering — gitignore, etc. — is delegated to the upstream tool
       (`git ls-files | dirtree_graph.py -`). Originally a `dirtree` subcommand of
-      socketscope.py; **split out into a standalone script** (piped to `render`) once the
-      "model is the seam" architecture was established — socketscope.py is now just the
-      renderer + the `sockets` generator.
+      socketscope.py; split out into a standalone script once the "model is the seam"
+      architecture was established.
+- [x] **`sockets_graph.py` generator + socketscope.py is now a pure viewer.** The socket
+      `/proc` capture (the original flagship) was extracted out of socketscope.py into a
+      standalone `sockets_graph.py` (filtering flags `--ignore*`, emits JSON to stdout),
+      completing the split: **every generator is now standalone** (`sockets_graph.py`,
+      `dirtree_graph.py`, `cmake_graph.py`) and **socketscope.py is just the renderer** —
+      it reads a model (stdin/file) and writes the HTML viewer, with no domain code. The
+      output plumbing (`resolve_outputs`/`write_outputs`, the `--json`/`--no-html` flags)
+      went away with capture; generators emit JSON only and the viewer's `-o` writes HTML.
 - [x] **Make the viewer truly field-generic.** It previously copied only a fixed
       allowlist (`id/label/full/type/listen`) into Cytoscape element data, so custom
       fields couldn't drive selectors — `listen` was hardcoded and dirtree's

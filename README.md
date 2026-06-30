@@ -2,12 +2,14 @@
 
 **See every open socket on a Linux host and the processes behind them — as one interactive, offline graph.**
 
-`socketscope` takes a point-in-time snapshot of every socket on a machine (TCP, UDP, UNIX-domain) and the processes using them, reads the process tree, and writes a **single self-contained HTML file**. Open it in any browser — no server, no internet, no install — and explore who's listening, who's connected to whom, and how data flows between processes.
+socketscope is two parts: small **generator** scripts that snapshot something into a generic JSON graph model, and **`socketscope.py`**, a domain-agnostic **viewer** that renders any such model into a **single self-contained HTML file**. Open it in any browser — no server, no internet, no install — and explore the graph: search, filter, trace dependencies, lay it out.
 
-It's one Python script with **zero dependencies** (standard library only). The visualization library is baked into the script, so the HTML it produces works completely offline.
+The flagship generator, **`sockets_graph.py`**, captures every socket on a machine (TCP, UDP, UNIX-domain), the processes using them, and the process tree — so you can see who's listening, who's connected to whom, and how data flows between processes. Other generators ship too (`dirtree_graph.py`, `cmake_graph.py`), and writing your own is just emitting the JSON shape.
+
+Everything is plain Python with **zero dependencies** (standard library only); the visualization library is vendored into the viewer, so its HTML works completely offline.
 
 ```bash
-sudo python3 socketscope.py            # writes socketscope-<timestamp>.html
+sudo python3 sockets_graph.py | python3 socketscope.py > sockets.html
 # then open that file in your browser
 ```
 
@@ -19,58 +21,59 @@ sudo python3 socketscope.py            # writes socketscope-<timestamp>.html
 
 ## Requirements
 
-- **Linux** (it reads `/proc`).
-- **Python 3.6+** — standard library only, nothing to `pip install`.
+- **Python 3.6+** — standard library only, nothing to `pip install`. The viewer
+  (`socketscope.py`) runs anywhere Python does.
+- **Linux** for `sockets_graph.py` (it reads `/proc`); other generators have their own
+  needs (`cmake_graph.py` wants `cmake` on PATH).
 - A browser to open the result. The HTML is fully offline.
 
 ## Install
 
-There's nothing to install — it's one file with no dependencies. Copy `socketscope.py` onto the host and run it:
+There's nothing to install — they're plain scripts with no dependencies. Copy the viewer
+(`socketscope.py`) and whichever generators you want onto the host:
 
 ```bash
-python3 socketscope.py
+sudo python3 sockets_graph.py | python3 socketscope.py > sockets.html
 ```
 
-Optionally make it executable (`chmod +x socketscope.py` → `./socketscope.py`). Run with `sudo` for full visibility (see below).
+Optionally make them executable (`chmod +x *.py`). Run `sockets_graph.py` with `sudo` for
+full visibility (see below).
 
 ## Usage
 
-```bash
-sudo python3 socketscope.py                          # -> socketscope-<timestamp>.html
-sudo python3 socketscope.py --json                   # also write the .json model
-sudo python3 socketscope.py --json --no-html -o - | jq .   # stream JSON to a pipe
-socketscope.py --ignore-uds -o net                   # unprivileged -> net.html
-```
-
-There are two subcommands — **`sockets`** (capture from `/proc`, the default) and **`render`** (rebuild HTML from a saved snapshot). Running with **no subcommand is the same as `sockets`**, so the historical usage above is unchanged. Other kinds of graph come from **standalone generator scripts** (e.g. `dirtree_graph.py`, `cmake_graph.py`) that emit the same JSON model and pipe to `render` — see [Other generators](#other-generators-the-model-is-the-seam).
-
-**Run as root (`sudo`) for the full picture.** Unprivileged, the kernel only lets you see the file descriptors of your *own* processes, so most sockets can't be attributed to a process. socketscope still works — it just shows less, and prints a hint to re-run with `sudo`. The capture summary always reports how many sockets it couldn't attribute.
-
-It's a **snapshot** — re-run it any time to refresh.
-
-### Output
-
-By default socketscope writes one file, **`socketscope-<timestamp>.html`**, so repeated runs don't overwrite each other. `-o NAME` sets the base name and the `.html`/`.json` extension is appended for you (a name you type *with* an extension is accepted too). Add **`--json`** to also write the raw graph model as `<base>.json`, **`--no-html`** to skip the viewer, and **`-o -`** to stream a single artifact to stdout — so `socketscope.py --json --no-html -o - | jq` works for scripting. The human-readable capture summary always goes to **stderr**, keeping stdout clean for piping. The JSON is the same `{meta, types, style, edge_key, traversals, force_structures, nodes, edges}` model the viewer's "Download data" button produces.
-
-### Rendering a saved snapshot
-
-socketscope is really two steps — **snapshot** the system into a JSON model, then **render** that model into HTML — and the default run does both. The **`render`** subcommand runs just the second step: it turns a saved snapshot JSON back into the HTML viewer **without polling the system at all**. Use it to re-view an archived capture, render a snapshot taken on another host, or rebuild the HTML from a capture piped in.
+A **generator** emits the JSON model to stdout; the **viewer** reads it (stdin or a file)
+and writes the HTML:
 
 ```bash
-socketscope.py render snap.json                 # -> HTML on stdout
-socketscope.py render snap.json -o view         # -> view.html
-socketscope.py render snap.json > view.html     # same, via redirect
-socketscope.py --json --no-html -o - | socketscope.py render   # capture | render
+sudo sockets_graph.py | socketscope.py > sockets.html       # sockets + processes
+sudo sockets_graph.py --ignore-uds | socketscope.py -o net  # less noise -> net.html
+sockets_graph.py | jq .                                     # the model is just JSON
+dirtree_graph.py ~/project | socketscope.py > tree.html     # a directory tree
+cmake_graph.py build       | socketscope.py > cmake.html     # CMake targets/deps
 ```
 
-`render` is a plain filter: it reads the snapshot from a **file argument** or, if omitted (or given `-`), from **stdin**, and writes HTML to **stdout** unless you pass `-o NAME` (→ `NAME.html`). It polls nothing, so it needs no privileges; the rendered HTML reflects the snapshot's *original* host and capture time. Because the model fully determines the output, `render` of a capture's `.json` reproduces that capture's `.html` exactly.
+`socketscope.py` reads the model from **stdin** (default) or a **file argument**, and
+writes HTML to **stdout** unless you pass `-o NAME` (→ `NAME.html`). It polls nothing and
+needs no privileges — only the generator does. (`socketscope.py render -` is also accepted,
+for symmetry with the old subcommand.) Save a generator's JSON to re-view or share later;
+because the model fully determines the output, rendering the same model always produces the
+same HTML.
+
+**Run `sockets_graph.py` as root (`sudo`) for the full picture.** Unprivileged, the kernel
+only lets you see the file descriptors of your *own* processes, so most sockets can't be
+attributed to a process. It still works — it just shows less, and reports on stderr how
+many sockets it couldn't attribute. It's a **snapshot** — re-run any time to refresh.
+
+The generators print a one-line summary to **stderr**, keeping stdout clean for the pipe;
+the viewer's "Download data (JSON)" button re-exports the embedded `{meta, node_classes,
+edge_classes, style, edge_key, traversals, force_structures, nodes, edges}` model.
 
 ### Other generators (the model is the seam)
 
 The viewer renders one generic JSON model, so **anything that emits that shape can be
-visualized** — a generator doesn't need to live in `socketscope.py`. Standalone generator
-scripts build the model and pipe it to `render`; they import nothing from the viewer (the
-JSON model is the only contract).
+visualized**. `sockets_graph.py` (above) is one such standalone generator; here are the
+others that ship. They each build the model and pipe it to the viewer, importing nothing
+from it — the JSON model is the only contract.
 
 **`dirtree_graph.py`** — walk a directory into the model: nodes are directories, files,
 and symlinks; edges are parent→child containment plus a **distinct dashed edge** from each
@@ -112,7 +115,7 @@ reveal them; CMake-internal `.rule`/generated stubs are split into a separate, a
 
 ### Filtering at capture time
 
-`--ignore` drops node classes from the data entirely (smaller file, less clutter). You can also just hide/show classes live in the viewer's legend after the fact. Class ids: `proc-root`, `proc-user`, `proc-kernel`, `tcp`, `udp`, `unix`, `unix-unnamed`, `remote`. Run `socketscope.py --help` for the convenience flags (`--ignore-uds`, `--ignore-kernel`, …).
+`sockets_graph.py --ignore` drops node classes from the data entirely (smaller file, less clutter). You can also just hide/show classes live in the viewer's legend after the fact. Class ids: `proc-root`, `proc-user`, `proc-kernel`, `tcp`, `udp`, `unix`, `unix-unnamed`, `remote`. Run `sockets_graph.py --help` for the convenience flags (`--ignore-uds`, `--ignore-kernel`, …).
 
 ## Exploring the graph
 
@@ -131,16 +134,18 @@ The graph self-organizes with a live force simulation that settles and stops. Th
 
 ## A note on sharing the output
 
-The generated HTML embeds a detailed picture of the host: process command lines (which can include arguments, paths, sometimes secrets), local and remote IP addresses, and UNIX socket paths. **Treat `sockets.html` like the sensitive snapshot it is** — it's git-ignored by default for that reason. Scrub or filter (`--ignore`) before sharing externally.
+A sockets graph embeds a detailed picture of the host: process command lines (which can include arguments, paths, sometimes secrets), local and remote IP addresses, and UNIX socket paths. **Treat `sockets.html` like the sensitive snapshot it is** — it's git-ignored by default for that reason. Scrub or filter (`sockets_graph.py --ignore`) before sharing externally.
 
 ## How it works
+
+`sockets_graph.py` builds the graph model:
 
 1. Reads processes from `/proc/<pid>/{status,cmdline}` and the parent/child tree.
 2. Parses sockets from `/proc/net/{tcp,tcp6,udp,udp6,unix}` (handling the little-endian address quirks itself — no dependency on `ss`/`lsof`).
 3. Maps sockets to processes via `/proc/<pid>/fd/` (`socket:[inode]` links).
-4. Builds a graph model and emits it as JSON inside an HTML page whose viewer (Cytoscape.js, vendored inline) renders and explores it.
+4. Emits the model as JSON. `socketscope.py` then embeds it in an HTML page whose viewer (Cytoscape.js, vendored inline) renders and explores it.
 
-Cytoscape.js is bundled into the script as a compressed blob and decompressed at write time, so the output has **zero network references** and opens offline anywhere.
+Cytoscape.js is bundled into the viewer as a compressed blob and decompressed at write time, so the output has **zero network references** and opens offline anywhere.
 
 ## Styling
 
