@@ -4,10 +4,10 @@
 A standalone generator for the socketscope viewer. It walks a directory (or reads
 an explicit path list on stdin) and prints ONE JSON graph model to stdout - the
 same generic model socketscope's `sockets` and `cmake_graph.py` produce. It does
-NOT import socketscope.py; the JSON model is the only contract. Pipe it to the
+NOT import render-graph-html.py; the JSON model is the only contract. Pipe it to the
 viewer:
 
-    dirtree_graph.py ~/project | socketscope.py render - > tree.html
+    dirtree_graph.py ~/project | render-graph-html.py > tree.html
 
 Nodes are directories, files, and symlinks (executables also carry an
 `executable` class); edges are parent->child containment plus a distinct
@@ -399,7 +399,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Walk a directory tree (or read a path list on stdin) and emit a graph\n"
-            "model JSON for the socketscope viewer. Pipe to: socketscope.py render -"
+            "model JSON for the socketscope viewer. Pipe to: render-graph-html.py"
         ),
         epilog=(
             "Pass '-' as the path to read a newline-separated path list from stdin\n"
@@ -407,9 +407,9 @@ def main():
             "so the listed paths connect into one tree. Filtering (gitignore, etc.)\n"
             "is delegated to the upstream tool. Relative entries resolve against -C\n"
             "(default: cwd) -- e.g. `git ls-files` prints repo-root-relative paths:\n"
-            "  dirtree_graph.py ~/project | socketscope.py render - > tree.html\n"
-            "  git -C ~/p ls-files | dirtree_graph.py - -C ~/p | socketscope.py render -\n"
-            "  find . -name '*.py' | dirtree_graph.py - | socketscope.py render -"
+            "  dirtree_graph.py ~/project | render-graph-html.py > tree.html\n"
+            "  git -C ~/p ls-files | dirtree_graph.py - -C ~/p | render-graph-html.py\n"
+            "  find . -name '*.py' | dirtree_graph.py - | render-graph-html.py"
         ),
     )
     ap.add_argument(

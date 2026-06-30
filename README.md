@@ -2,14 +2,14 @@
 
 **See every open socket on a Linux host and the processes behind them — as one interactive, offline graph.**
 
-socketscope is two parts: small **generator** scripts that snapshot something into a generic JSON graph model, and **`socketscope.py`**, a domain-agnostic **viewer** that renders any such model into a **single self-contained HTML file**. Open it in any browser — no server, no internet, no install — and explore the graph: search, filter, trace dependencies, lay it out.
+socketscope is two parts: small **generator** scripts that snapshot something into a generic JSON graph model, and **`render-graph-html.py`**, a domain-agnostic **viewer** that renders any such model into a **single self-contained HTML file**. Open it in any browser — no server, no internet, no install — and explore the graph: search, filter, trace dependencies, lay it out.
 
 The flagship generator, **`sockets_graph.py`**, captures every socket on a machine (TCP, UDP, UNIX-domain), the processes using them, and the process tree — so you can see who's listening, who's connected to whom, and how data flows between processes. Other generators ship too (`dirtree_graph.py`, `cmake_graph.py`), and writing your own is just emitting the JSON shape.
 
 Everything is plain Python with **zero dependencies** (standard library only); the visualization library is vendored into the viewer, so its HTML works completely offline.
 
 ```bash
-sudo python3 sockets_graph.py | python3 socketscope.py > sockets.html
+sudo python3 sockets_graph.py | python3 render-graph-html.py > sockets.html
 # then open that file in your browser
 ```
 
@@ -22,7 +22,7 @@ sudo python3 sockets_graph.py | python3 socketscope.py > sockets.html
 ## Requirements
 
 - **Python 3.6+** — standard library only, nothing to `pip install`. The viewer
-  (`socketscope.py`) runs anywhere Python does.
+  (`render-graph-html.py`) runs anywhere Python does.
 - **Linux** for `sockets_graph.py` (it reads `/proc`); other generators have their own
   needs (`cmake_graph.py` wants `cmake` on PATH).
 - A browser to open the result. The HTML is fully offline.
@@ -30,10 +30,10 @@ sudo python3 sockets_graph.py | python3 socketscope.py > sockets.html
 ## Install
 
 There's nothing to install — they're plain scripts with no dependencies. Copy the viewer
-(`socketscope.py`) and whichever generators you want onto the host:
+(`render-graph-html.py`) and whichever generators you want onto the host:
 
 ```bash
-sudo python3 sockets_graph.py | python3 socketscope.py > sockets.html
+sudo python3 sockets_graph.py | python3 render-graph-html.py > sockets.html
 ```
 
 Optionally make them executable (`chmod +x *.py`). Run `sockets_graph.py` with `sudo` for
@@ -45,17 +45,16 @@ A **generator** emits the JSON model to stdout; the **viewer** reads it (stdin o
 and writes the HTML:
 
 ```bash
-sudo sockets_graph.py | socketscope.py > sockets.html       # sockets + processes
-sudo sockets_graph.py --ignore-uds | socketscope.py -o net  # less noise -> net.html
+sudo sockets_graph.py | render-graph-html.py > sockets.html       # sockets + processes
+sudo sockets_graph.py --ignore-uds | render-graph-html.py -o net  # less noise -> net.html
 sockets_graph.py | jq .                                     # the model is just JSON
-dirtree_graph.py ~/project | socketscope.py > tree.html     # a directory tree
-cmake_graph.py build       | socketscope.py > cmake.html     # CMake targets/deps
+dirtree_graph.py ~/project | render-graph-html.py > tree.html     # a directory tree
+cmake_graph.py build       | render-graph-html.py > cmake.html     # CMake targets/deps
 ```
 
-`socketscope.py` reads the model from **stdin** (default) or a **file argument**, and
+`render-graph-html.py` reads the model from **stdin** (default) or a **file argument**, and
 writes HTML to **stdout** unless you pass `-o NAME` (→ `NAME.html`). It polls nothing and
-needs no privileges — only the generator does. (`socketscope.py render -` is also accepted,
-for symmetry with the old subcommand.) Save a generator's JSON to re-view or share later;
+needs no privileges — only the generator does. Save a generator's JSON to re-view or share later;
 because the model fully determines the output, rendering the same model always produces the
 same HTML.
 
@@ -82,9 +81,9 @@ symlink to its target. Executable files get a green border; it ships **Descendan
 carries `size`/`mtime`/`ctime`/owner/`perms` in its tooltip.
 
 ```bash
-dirtree_graph.py ~/project | socketscope.py render - > tree.html
-dirtree_graph.py / --max-depth 3 | socketscope.py render -      # shallow, whole-system
-dirtree_graph.py . --no-files  | socketscope.py render -        # directories only
+dirtree_graph.py ~/project | render-graph-html.py > tree.html
+dirtree_graph.py / --max-depth 3 | render-graph-html.py      # shallow, whole-system
+dirtree_graph.py . --no-files  | render-graph-html.py        # directories only
 ```
 
 Pass `-` as the path and it reads a newline-separated path list from **stdin** instead of
@@ -94,16 +93,16 @@ Relative entries resolve against **`-C`/`--directory`** (which also becomes the 
 needed for `git ls-files`, whose paths are relative to the repo root:
 
 ```bash
-git -C ~/p ls-files | dirtree_graph.py - -C ~/p | socketscope.py render -   # Git-tracked only
-find . -name '*.py'  | dirtree_graph.py -        | socketscope.py render -
+git -C ~/p ls-files | dirtree_graph.py - -C ~/p | render-graph-html.py   # Git-tracked only
+find . -name '*.py'  | dirtree_graph.py -        | render-graph-html.py
 ```
 
 **`cmake_graph.py`** — read a CMake project's [File API](https://cmake.org/cmake/help/latest/manual/cmake-file-api.7.html)
 and emit the target/dependency/source graph:
 
 ```bash
-cmake_graph.py build | socketscope.py render - > cmake.html   # targets, deps, source files
-cmake_graph.py build --no-sources | socketscope.py render -   # just the dependency DAG
+cmake_graph.py build | render-graph-html.py > cmake.html   # targets, deps, source files
+cmake_graph.py build --no-sources | render-graph-html.py   # just the dependency DAG
 ```
 
 Targets are colored by type (executable / static-library / …), edges are `link`
@@ -118,8 +117,8 @@ and emit a **call graph**. It walks the call hierarchy (`callHierarchy/incomingC
 outward from one or more seed symbols:
 
 ```bash
-lspgraph.py proj --file src/foo.cpp | socketscope.py > calls.html   # seed: a file's functions
-lspgraph.py proj --seed planPath --depth 4 | socketscope.py         # seed: a symbol name
+lspgraph.py proj --file src/foo.cpp | render-graph-html.py > calls.html   # seed: a file's functions
+lspgraph.py proj --seed planPath --depth 4 | render-graph-html.py         # seed: a symbol name
 ```
 
 Nodes are functions/methods/constructors (seeds get a red border), edges are directed
@@ -159,9 +158,51 @@ A sockets graph embeds a detailed picture of the host: process command lines (wh
 1. Reads processes from `/proc/<pid>/{status,cmdline}` and the parent/child tree.
 2. Parses sockets from `/proc/net/{tcp,tcp6,udp,udp6,unix}` (handling the little-endian address quirks itself — no dependency on `ss`/`lsof`).
 3. Maps sockets to processes via `/proc/<pid>/fd/` (`socket:[inode]` links).
-4. Emits the model as JSON. `socketscope.py` then embeds it in an HTML page whose viewer (Cytoscape.js, vendored inline) renders and explores it.
+4. Emits the model as JSON. `render-graph-html.py` then embeds it in an HTML page whose viewer (Cytoscape.js, vendored inline) renders and explores it.
 
 Cytoscape.js is bundled into the viewer as a compressed blob and decompressed at write time, so the output has **zero network references** and opens offline anywhere.
+
+## Bundling
+
+The viewer and a generator are normally two scripts joined by a pipe
+(`generator | render-graph-html.py`). `just bundle` fuses them into **one
+self-contained, runnable script** — generate *and* render in a single invocation,
+nothing to pipe:
+
+```sh
+just bundle sockets_graph.py                  # -> dist/sockets_graph.py
+sudo ./dist/sockets_graph.py > sockets.html   # capture + render in one shot
+sudo ./dist/sockets_graph.py -o sockets       # or write sockets.html directly
+
+just bundle dirtree_graph.py                  # -> dist/dirtree_graph.py
+just bundle lspgraph.py calls.py              # custom output name
+```
+
+Bundles land in `dist/` (git-ignored). The recipe is plain shell: it cats the
+viewer (everything lives under one `class Viewer`), then the generator, then a
+small glue tail, and runs `black`. At runtime the glue calls the generator's
+`main()`, captures the model JSON it writes to stdout, and hands it to
+`Viewer.emit_html`. So a bundle accepts all of the generator's own flags
+(`--ignore-uds`, `--depth`, …) **plus** a bundle-provided `-o NAME` for the HTML
+output (stdout by default); `-h`/`--help` shows the generator's own help.
+
+### Generator conventions
+
+Any generator can be bundled (and piped) if it follows these — every shipped
+generator does:
+
+- **C1 — stdout is the model.** A top-level `main()` builds the graph-model dict
+  and writes it as JSON to **stdout** (`json.dump(model, sys.stdout, …)`), and
+  *returns* on success. Diagnostics go to stderr.
+- **C2 — `-o`/`--out` is reserved** for the bundle's HTML output; don't define it.
+- **C3 — don't define a top-level `Viewer`.** That one name is the renderer's
+  namespace (the only name a generator must avoid); everything the viewer exposes
+  is a `Viewer.*` attribute.
+- **C4 — errors via `SystemExit`.** Raise `SystemExit("message")` (or let argparse
+  exit) on failure / `--help`; the bundle relays the message and exit code instead
+  of trying to render. The success path just returns.
+
+`just bundle` lints C1–C3 and refuses a generator that violates them.
 
 ## Styling
 
@@ -178,7 +219,7 @@ A top-level **`traversals`** array defines the **Traverse** tools (the buttons t
 
 A top-level **`force_structures`** array defines the **Force structure** dropdown (how the layout weights its springs). Each is `{id, label, emphasize}` where `emphasize` is an edge selector; when active, matching edges spring strongly (strength-scaled) and the rest weakly, so the layout clusters around them. socketscope ships `tree`/`flow`; the viewer always adds built-in **spread** and **distance from selected**, so a graph that omits it still lays out.
 
-Because the base is fully generic and `render` only requires `nodes` + `edges`, the viewer doubles as a renderer for **any directed graph** — hand a `{ "nodes": [...], "edges": [...] }` file (a tree, a dependency graph, …) to `socketscope.py render` and it draws. `node_classes`, `edge_classes`, `meta`, `style`, `edge_key`, `traversals`, and `force_structures` are all optional; nodes fall back to their `id` for a label, and any class not in a catalog shows up under the legend's `other` row.
+Because the base is fully generic and the viewer only requires `nodes` + `edges`, it doubles as a renderer for **any directed graph** — hand a `{ "nodes": [...], "edges": [...] }` file (a tree, a dependency graph, …) to `render-graph-html.py` and it draws. `node_classes`, `edge_classes`, `meta`, `style`, `edge_key`, `traversals`, and `force_structures` are all optional; nodes fall back to their `id` for a label, and any class not in a catalog shows up under the legend's `other` row.
 
 (Note: a hand-edited override `style` that references an external `url(...)` or web font would fetch over the network when rendered — see BACKLOG; the built-in base + class colors contain no external references.)
 

@@ -4,11 +4,11 @@
 A standalone generator for the socketscope viewer. It drives a language server
 (clangd by default) over stdio JSON-RPC, walks the CALL HIERARCHY outward from
 one or more seed symbols, and prints ONE JSON graph model to stdout - the same
-generic model the other generators produce. It does NOT import socketscope.py;
+generic model the other generators produce. It does NOT import render-graph-html.py;
 the JSON model is the only contract. Pipe it to the viewer:
 
-    lspgraph.py <project> --file src/foo.cpp | socketscope.py > calls.html
-    lspgraph.py <project> --seed planPath   | socketscope.py > calls.html
+    lspgraph.py <project> --file src/foo.cpp | render-graph-html.py > calls.html
+    lspgraph.py <project> --seed planPath   | render-graph-html.py > calls.html
 
 The graph is built from `callHierarchy/incomingCalls` (who calls X), walking UP
 the call graph from the seeds - the impact-analysis direction ("what breaks if I
@@ -413,12 +413,12 @@ def main():
         description=(
             "Drive a language server (clangd) and emit a call-graph model JSON for\n"
             "the socketscope viewer. The graph is built by walking callers\n"
-            "(incomingCalls) up from the seed symbols. Pipe to: socketscope.py"
+            "(incomingCalls) up from the seed symbols. Pipe to: render-graph-html.py"
         ),
         epilog=(
             "examples:\n"
-            "  lspgraph.py proj --file src/foo.cpp | socketscope.py > calls.html\n"
-            "  lspgraph.py proj --seed planPath --depth 4 | socketscope.py\n"
+            "  lspgraph.py proj --file src/foo.cpp | render-graph-html.py > calls.html\n"
+            "  lspgraph.py proj --seed planPath --depth 4 | render-graph-html.py\n"
         ),
     )
     ap.add_argument(

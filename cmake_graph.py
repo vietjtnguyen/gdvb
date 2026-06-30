@@ -4,10 +4,10 @@
 A standalone generator for the socketscope viewer. It reads CMake's File API
 (codemodel-v2) from a configured build directory and prints ONE JSON graph model
 to stdout - the same generic model socketscope's own `sockets`/`dirtree` produce.
-It does NOT import socketscope.py; the JSON model is the only contract. Pipe it
+It does NOT import render-graph-html.py; the JSON model is the only contract. Pipe it
 to the viewer:
 
-    cmake_graph.py <build-dir> | socketscope.py render - > cmake.html
+    cmake_graph.py <build-dir> | render-graph-html.py > cmake.html
 
 Nodes are targets (classed by type) and, by default, their source files; edges
 are target->target dependencies and target->source. The result is a real
@@ -276,12 +276,12 @@ def main():
         description=(
             "Emit a CMake project's target/dependency/source graph as JSON for\n"
             "the socketscope viewer. Reads the CMake File API from a configured\n"
-            "build directory. Pipe to: socketscope.py render -"
+            "build directory. Pipe to: render-graph-html.py"
         ),
         epilog=(
             "examples:\n"
-            "  cmake_graph.py build | socketscope.py render - > cmake.html\n"
-            "  cmake_graph.py build --no-sources | socketscope.py render -\n"
+            "  cmake_graph.py build | render-graph-html.py > cmake.html\n"
+            "  cmake_graph.py build --no-sources | render-graph-html.py\n"
         ),
     )
     ap.add_argument("build", help="configured CMake build directory")

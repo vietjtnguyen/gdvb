@@ -4,10 +4,10 @@
 A standalone generator for the socketscope viewer. It snapshots every open
 socket and the processes using them straight from /proc, then prints ONE JSON
 graph model to stdout - the same generic model dirtree_graph.py / cmake_graph.py
-produce. It does NOT import socketscope.py; the JSON model is the only contract.
+produce. It does NOT import render-graph-html.py; the JSON model is the only contract.
 Pipe it to the viewer:
 
-    sudo sockets_graph.py | socketscope.py render - > sockets.html
+    sudo sockets_graph.py | render-graph-html.py > sockets.html
 
 Run as root (sudo) to attribute system-owned sockets to their processes;
 unprivileged it sees only your own processes' descriptors. Stdlib only; Linux.
@@ -597,13 +597,13 @@ def main():
         description=(
             "Snapshot every open socket and the processes using them from /proc\n"
             "and emit a graph model JSON for the socketscope viewer. Pipe to:\n"
-            "socketscope.py render -\n"
+            "render-graph-html.py\n"
             "Run as root (sudo) to attribute system-owned sockets to processes."
         ),
         epilog=(
             "examples:\n"
-            "  sudo sockets_graph.py | socketscope.py render - > sockets.html\n"
-            "  sudo sockets_graph.py --ignore-uds | socketscope.py render -\n"
+            "  sudo sockets_graph.py | render-graph-html.py > sockets.html\n"
+            "  sudo sockets_graph.py --ignore-uds | render-graph-html.py\n"
             "\n"
             "node class ids (for --ignore): " + ", ".join(type_ids)
         ),
