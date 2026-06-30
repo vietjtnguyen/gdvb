@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""dirtree_graph - emit a directory tree as a graph model JSON.
+"""dirtree-graph - emit a directory tree as a graph model JSON.
 
 A standalone generator for the socketscope viewer. It walks a directory (or reads
 an explicit path list on stdin) and prints ONE JSON graph model to stdout - the
-same generic model socketscope's `sockets` and `cmake_graph.py` produce. It does
+same generic model socketscope's `sockets` and `cmake-graph` produce. It does
 NOT import render-graph-html.py; the JSON model is the only contract. Pipe it to the
 viewer:
 
-    dirtree_graph.py ~/project | render-graph-html.py > tree.html
+    dirtree-graph ~/project | render-graph-html.py > tree.html
 
 Nodes are directories, files, and symlinks (executables also carry an
 `executable` class); edges are parent->child containment plus a distinct
@@ -270,7 +270,7 @@ def build_walk(root, max_depth=None, max_entries=2000, follow=False, no_files=Fa
     try:
         root_lst = os.lstat(root)
     except OSError as e:
-        raise SystemExit("dirtree_graph: cannot stat %s: %s" % (root, e))
+        raise SystemExit("dirtree-graph: cannot stat %s: %s" % (root, e))
     nodes.append(_node(root, root_lst, "dir", is_root=True))
     node_ids.add(_nid(root))
 
@@ -325,7 +325,7 @@ def build_walk(root, max_depth=None, max_entries=2000, follow=False, no_files=Fa
 
 def build_paths(lines, base=None, max_entries=2000, no_files=False):
     """Build the model from an explicit newline-separated path list on stdin
-    (e.g. `git ls-files | dirtree_graph.py -`). Directory ancestors are
+    (e.g. `git ls-files | dirtree-graph -`). Directory ancestors are
     synthesized so the listed paths connect into one tree; *which* paths appear is
     left entirely to the upstream tool (git, find, fd, ...), so this carries no
     ignore/VCS logic. Relative entries resolve against `base` (e.g. a repo root) --
@@ -341,7 +341,7 @@ def build_paths(lines, base=None, max_entries=2000, no_files=False):
         )
     paths = sorted(paths)
     if not paths:
-        raise SystemExit("dirtree_graph: no paths read from stdin")
+        raise SystemExit("dirtree-graph: no paths read from stdin")
     # With an explicit base, root the tree there; otherwise auto-root at the
     # deepest directory common to every input path.
     if base:
@@ -369,7 +369,7 @@ def build_paths(lines, base=None, max_entries=2000, no_files=False):
     try:
         add(root, os.lstat(root), "dir", is_root=True)
     except OSError as e:
-        raise SystemExit("dirtree_graph: cannot stat %s: %s" % (root, e))
+        raise SystemExit("dirtree-graph: cannot stat %s: %s" % (root, e))
 
     for p in paths:
         rel = os.path.relpath(p, root)
@@ -395,7 +395,7 @@ def build_paths(lines, base=None, max_entries=2000, no_files=False):
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="dirtree_graph",
+        prog="dirtree-graph",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Walk a directory tree (or read a path list on stdin) and emit a graph\n"
@@ -407,9 +407,9 @@ def main():
             "so the listed paths connect into one tree. Filtering (gitignore, etc.)\n"
             "is delegated to the upstream tool. Relative entries resolve against -C\n"
             "(default: cwd) -- e.g. `git ls-files` prints repo-root-relative paths:\n"
-            "  dirtree_graph.py ~/project | render-graph-html.py > tree.html\n"
-            "  git -C ~/p ls-files | dirtree_graph.py - -C ~/p | render-graph-html.py\n"
-            "  find . -name '*.py' | dirtree_graph.py - | render-graph-html.py"
+            "  dirtree-graph ~/project | render-graph-html.py > tree.html\n"
+            "  git -C ~/p ls-files | dirtree-graph - -C ~/p | render-graph-html.py\n"
+            "  find . -name '*.py' | dirtree-graph - | render-graph-html.py"
         ),
     )
     ap.add_argument(
@@ -477,7 +477,7 @@ def main():
     sys.stdout.write("\n")
     c = model["meta"]["counts"]
     print(
-        "dirtree_graph: %s — %d nodes, %d edges%s"
+        "dirtree-graph: %s — %d nodes, %d edges%s"
         % (
             model["meta"]["title"],
             c["nodes"],

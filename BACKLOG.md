@@ -34,7 +34,7 @@ Check things off as they land.
       block, each emphasizes an edge selector; spring weighting unified to one
       per-edge weight; built-in `spread` + `distance from selected`. This was the last
       domain-coupled viewer feature — the viewer is now fully generic over the JSON.
-- [x] **`dirtree_graph.py` generator** — a non-socket model generator that walks a
+- [x] **`dirtree-graph` generator** — a non-socket model generator that walks a
       directory tree (nodes = files/dirs/symlinks, edges = containment + distinct
       symlink→target edges) into the same generic model, proving the viewer is
       domain-agnostic. Carries dirtree-specific `style` (exec files, dashed symlinks),
@@ -42,14 +42,14 @@ Check things off as they land.
       and per-node `size`/`mtime`/`ctime`/`user`/`group`/`perms` metadata. Passing `-`
       reads a newline-separated path list from stdin (ancestors synthesized to connect
       them), so filtering — gitignore, etc. — is delegated to the upstream tool
-      (`git ls-files | dirtree_graph.py -`). Originally a `dirtree` subcommand of
+      (`git ls-files | dirtree-graph -`). Originally a `dirtree` subcommand of
       render-graph-html.py; split out into a standalone script once the "model is the seam"
       architecture was established.
-- [x] **`sockets_graph.py` generator + render-graph-html.py is now a pure viewer.** The socket
+- [x] **`sockets-graph` generator + render-graph-html.py is now a pure viewer.** The socket
       `/proc` capture (the original flagship) was extracted out of render-graph-html.py into a
-      standalone `sockets_graph.py` (filtering flags `--ignore*`, emits JSON to stdout),
-      completing the split: **every generator is now standalone** (`sockets_graph.py`,
-      `dirtree_graph.py`, `cmake_graph.py`) and **render-graph-html.py is just the renderer** —
+      standalone `sockets-graph` (filtering flags `--ignore*`, emits JSON to stdout),
+      completing the split: **every generator is now standalone** (`sockets-graph`,
+      `dirtree-graph`, `cmake-graph`) and **render-graph-html.py is just the renderer** —
       it reads a model (stdin/file) and writes the HTML viewer, with no domain code. The
       output plumbing (`resolve_outputs`/`write_outputs`, the `--json`/`--no-html` flags)
       went away with capture; generators emit JSON only and the viewer's `-o` writes HTML.
@@ -69,13 +69,13 @@ Check things off as they land.
       are off) and an `other` catch-all for uncataloged classes. Also de-socketed the
       tree-label toggle (triage #1) — hiding tree-edge labels is now just hiding the
       `tree` edge class. Breaking change; v0, no back-compat.
-- [x] **`cmake_graph.py` generator** (standalone). Reads CMake's File API codemodel-v2
+- [x] **`cmake-graph` generator** (standalone). Reads CMake's File API codemodel-v2
       from a configured build dir and emits the target/dependency/source graph as JSON,
       piped to `render` — the first generator that lives *outside* render-graph-html.py,
       validating the "model is the seam" architecture. Targets classed by type; `link`
       (target→dep) + `source` (target→file) edges; source nodes start hidden. A real
       dependency DAG, so Topo BFS + "Depended on by" shine.
-- [x] **`lspgraph.py` — LSP call-graph generator** (clangd-first, standalone). Drives a
+- [x] **`lsp-graph` — LSP call-graph generator** (clangd-first, standalone). Drives a
       language server over stdio JSON-RPC (minimal `Content-Length` client), waits for the
       background index, resolves seeds (`--file` → a file's functions, `--seed NAME` →
       `workspace/symbol`), and walks `callHierarchy/incomingCalls` outward to `--depth`

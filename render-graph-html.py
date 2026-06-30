@@ -4,7 +4,7 @@
 Reads ONE generic graph model (a JSON object with at least `nodes` and `edges`)
 from a file or stdin and writes ONE self-contained, offline, interactive HTML
 force-directed graph for exploring it. The model is produced by a *generator*
-(this repo ships sockets_graph.py, dirtree_graph.py, cmake_graph.py); the viewer
+(this repo ships sockets-graph, dirtree-graph, cmake-graph); the viewer
 is domain-agnostic and imports nothing generator-specific.
 
 Stdlib only - no external Python packages. Cytoscape.js is vendored inline
@@ -12,7 +12,7 @@ Stdlib only - no external Python packages. Cytoscape.js is vendored inline
 in any browser with no network access.
 
 Usage:
-    sudo sockets_graph.py | python3 render-graph-html.py > sockets.html
+    sudo sockets-graph | python3 render-graph-html.py > sockets.html
     python3 render-graph-html.py model.json -o view        # -> view.html
 """
 import os
@@ -150,8 +150,8 @@ class Viewer:
         if src == "-" and sys.stdin.isatty():
             ap.error(
                 "no input: pipe a model JSON or pass a file. e.g.\n"
-                "  sudo sockets_graph.py | render-graph-html.py\n"
-                "  cmake_graph.py build  | render-graph-html.py > cmake.html\n"
+                "  sudo sockets-graph | render-graph-html.py\n"
+                "  cmake-graph build  | render-graph-html.py > cmake.html\n"
                 "  render-graph-html.py model.json -o view"
             )
         try:
@@ -204,12 +204,12 @@ class Viewer:
             epilog=(
                 "The model comes from a generator that emits the shared JSON shape\n"
                 "({nodes, edges, ...}); the viewer is domain-agnostic:\n"
-                "  sudo sockets_graph.py | render-graph-html.py        sockets + processes\n"
-                "  dirtree_graph.py ~/p  | render-graph-html.py        a directory tree\n"
-                "  cmake_graph.py build  | render-graph-html.py        CMake targets/deps\n"
+                "  sudo sockets-graph | render-graph-html.py        sockets + processes\n"
+                "  dirtree-graph ~/p  | render-graph-html.py        a directory tree\n"
+                "  cmake-graph build  | render-graph-html.py        CMake targets/deps\n"
                 "\n"
                 "examples:\n"
-                "  cmake_graph.py build | render-graph-html.py > cmake.html\n"
+                "  cmake-graph build | render-graph-html.py > cmake.html\n"
                 "  render-graph-html.py model.json -o view        -> view.html\n"
                 "  render-graph-html.py model.json > view.html"
             ),

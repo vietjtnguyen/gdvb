@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cmake_graph - emit a CMake project's target/dependency/source graph as JSON.
+"""cmake-graph - emit a CMake project's target/dependency/source graph as JSON.
 
 A standalone generator for the socketscope viewer. It reads CMake's File API
 (codemodel-v2) from a configured build directory and prints ONE JSON graph model
@@ -7,7 +7,7 @@ to stdout - the same generic model socketscope's own `sockets`/`dirtree` produce
 It does NOT import render-graph-html.py; the JSON model is the only contract. Pipe it
 to the viewer:
 
-    cmake_graph.py <build-dir> | render-graph-html.py > cmake.html
+    cmake-graph <build-dir> | render-graph-html.py > cmake.html
 
 Nodes are targets (classed by type) and, by default, their source files; edges
 are target->target dependencies and target->source. The result is a real
@@ -133,16 +133,16 @@ def ensure_reply(build, configure, config_unused):
                 check=True,
             )
         except FileNotFoundError:
-            raise SystemExit("cmake_graph: `cmake` not found on PATH")
+            raise SystemExit("cmake-graph: `cmake` not found on PATH")
         except subprocess.CalledProcessError as e:
             raise SystemExit(
-                "cmake_graph: `cmake %s` failed (%s). Is it a configured build "
+                "cmake-graph: `cmake %s` failed (%s). Is it a configured build "
                 "dir? Try configuring first, or pass --no-configure." % (build, e)
             )
     reply = os.path.join(api, "reply")
     if not os.path.isdir(reply) or not glob.glob(os.path.join(reply, "index-*.json")):
         raise SystemExit(
-            "cmake_graph: no File API reply in %s. Run without --no-configure, "
+            "cmake-graph: no File API reply in %s. Run without --no-configure, "
             "or configure the project first (cmake -S <src> -B %s)." % (reply, build)
         )
     return reply
@@ -154,7 +154,7 @@ def load_codemodel(reply, config):
     try:
         cm_file = idx["reply"]["codemodel-v2"]["jsonFile"]
     except KeyError:
-        raise SystemExit("cmake_graph: codemodel-v2 missing from the File API reply")
+        raise SystemExit("cmake-graph: codemodel-v2 missing from the File API reply")
     cm = json.load(open(os.path.join(reply, cm_file)))
     configs = cm["configurations"]
     cfg = configs[0]
@@ -162,7 +162,7 @@ def load_codemodel(reply, config):
         cfg = next((c for c in configs if c["name"] == config), None)
         if cfg is None:
             raise SystemExit(
-                "cmake_graph: no configuration %r (have: %s)"
+                "cmake-graph: no configuration %r (have: %s)"
                 % (config, ", ".join(c["name"] for c in configs))
             )
     return cm, cfg
@@ -271,7 +271,7 @@ def build_model(reply, cm, cfg, want_sources):
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="cmake_graph",
+        prog="cmake-graph",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Emit a CMake project's target/dependency/source graph as JSON for\n"
@@ -280,8 +280,8 @@ def main():
         ),
         epilog=(
             "examples:\n"
-            "  cmake_graph.py build | render-graph-html.py > cmake.html\n"
-            "  cmake_graph.py build --no-sources | render-graph-html.py\n"
+            "  cmake-graph build | render-graph-html.py > cmake.html\n"
+            "  cmake-graph build --no-sources | render-graph-html.py\n"
         ),
     )
     ap.add_argument("build", help="configured CMake build directory")
@@ -314,7 +314,7 @@ def main():
     sys.stdout.write("\n")
     c = model["meta"]["counts"]
     print(
-        "cmake_graph: %s — %d nodes, %d edges (config %s)%s"
+        "cmake-graph: %s — %d nodes, %d edges (config %s)%s"
         % (
             model["meta"]["title"],
             c["nodes"],

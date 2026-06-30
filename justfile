@@ -4,8 +4,8 @@ format:
 
 # Cats the viewer (all under `class Viewer`) + the generator + the glue, after
 # linting the generator against the conventions (see README "Generator conventions").
-#   just bundle sockets_graph.py   ->  dist/sockets_graph.py  (generate + render in one)
-#   just bundle lspgraph.py calls.py
+#   just bundle sockets-graph   ->  dist/sockets-graph-scope  (generate + render in one)
+#   just bundle lsp-graph calls
 # Fuse render-graph-html.py + a generator into one standalone runnable script (dist/).
 bundle gen out="":
     #!/usr/bin/env bash
@@ -13,7 +13,7 @@ bundle gen out="":
     gen="{{gen}}"
     [ -f "$gen" ] || { echo "bundle: generator not found: $gen" >&2; exit 1; }
     out="{{out}}"
-    [ -n "$out" ] || out="dist/$(basename "$gen")"
+    [ -n "$out" ] || out="dist/$(basename "$gen")-scope"
     if [ "$out" = "$gen" ] || [ "$(basename "$out")" = "render-graph-html.py" ]; then
       echo "bundle: refusing to overwrite a source file ($out)" >&2; exit 1
     fi
@@ -35,13 +35,13 @@ bundle gen out="":
     chmod +x "$out"
     echo "wrote $out ($(wc -l < "$out") lines) — run: ./$out [generator args] > out.html"
 
-# Bundle every generator (every *.py except the viewer and the glue) into dist/.
+# Bundle every generator (every `*-graph` program) into dist/.
 bundle-all:
     #!/usr/bin/env bash
     set -euo pipefail
+    shopt -s nullglob
     n=0
-    for gen in *.py; do
-      case "$gen" in render-graph-html.py | bundle_main.py) continue ;; esac
+    for gen in *-graph; do
       just bundle "$gen"
       n=$((n + 1))
     done

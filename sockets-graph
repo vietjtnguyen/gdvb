@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""sockets_graph - emit the open sockets + processes graph as JSON.
+"""sockets-graph - emit the open sockets + processes graph as JSON.
 
 A standalone generator for the socketscope viewer. It snapshots every open
 socket and the processes using them straight from /proc, then prints ONE JSON
-graph model to stdout - the same generic model dirtree_graph.py / cmake_graph.py
+graph model to stdout - the same generic model dirtree-graph / cmake-graph
 produce. It does NOT import render-graph-html.py; the JSON model is the only contract.
 Pipe it to the viewer:
 
-    sudo sockets_graph.py | render-graph-html.py > sockets.html
+    sudo sockets-graph | render-graph-html.py > sockets.html
 
 Run as root (sudo) to attribute system-owned sockets to their processes;
 unprivileged it sees only your own processes' descriptors. Stdlib only; Linux.
@@ -592,7 +592,7 @@ def _io_label(s):
 def main():
     type_ids = [c["id"] for c in NODE_CLASSES]
     ap = argparse.ArgumentParser(
-        prog="sockets_graph",
+        prog="sockets-graph",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Snapshot every open socket and the processes using them from /proc\n"
@@ -602,8 +602,8 @@ def main():
         ),
         epilog=(
             "examples:\n"
-            "  sudo sockets_graph.py | render-graph-html.py > sockets.html\n"
-            "  sudo sockets_graph.py --ignore-uds | render-graph-html.py\n"
+            "  sudo sockets-graph | render-graph-html.py > sockets.html\n"
+            "  sudo sockets-graph --ignore-uds | render-graph-html.py\n"
             "\n"
             "node class ids (for --ignore): " + ", ".join(type_ids)
         ),
@@ -671,7 +671,7 @@ def main():
     sys.stdout.write("\n")
     c = model["meta"]["counts"]
     print(
-        "sockets_graph: %s — %d nodes, %d edges%s"
+        "sockets-graph: %s — %d nodes, %d edges%s"
         % (
             model["meta"]["title"],
             c["nodes"],
