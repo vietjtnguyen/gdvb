@@ -201,31 +201,56 @@ socketscope deliberately depends on very little, and on nothing *new*.
 
 ## Similar Projects/Tools
 
-socketscope sits in the gap between "static Graphviz dump of `ss`" and "stand up a whole observability platform" — a zero-install, single-host, **offline** exploration tool. Neighbours in the space:
+socketscope is a graph viewer (one offline HTML file) fed by generator scripts. No single
+tool occupies the same spot, but each part of it has well-established neighbours. Grouped
+by how they relate:
 
-**Interactive connection graphs (closest in spirit)**
+**Turning a graph into a standalone interactive HTML.** [pyvis](https://pyvis.readthedocs.io/)
+renders a NetworkX graph to an interactive HTML page (vis.js) you open in a browser — the
+same "a file, not a server" shape. It's a library you script against; styling is set when
+you build the page, and there's no generic-model/generator split.
 
-- [Weave Scope](https://github.com/weaveworks/scope) — web UI graphing processes/containers/hosts and their connections from `/proc` + conntrack. The nearest analog, but it's an **agent + live server**, container/Kubernetes-oriented, and **no longer maintained** (Weaveworks shut down in 2024; last release 2021).
-- [EtherApe](https://etherape.sourceforge.io/) — live graphical monitor where nodes are **hosts** and links are traffic, color-coded by protocol. It's a packet sniffer focused on live throughput, not process↔socket structure.
+**Graphviz and interactive front-ends for it.** [Graphviz](https://graphviz.org/)/DOT is the
+standard for laying a graph out from text; DOT mixes the graph with its layout and style
+directives, and renders to static images by default. Interactive front-ends exist —
+[d3-graphviz](https://github.com/magjac/d3-graphviz) (Graphviz compiled to WASM, in-browser
+with zoom/pan) and the desktop `xdot`. socketscope keeps the data and the (ignorable) style
+hints in separate parts of the JSON rather than in one DSL.
 
-**Live per-process / per-connection monitors (lists, not graphs)**
+**Interactive graph explorers.** [Gephi](https://gephi.org/) and the desktop
+[Cytoscape](https://cytoscape.org/) load a graph file (GraphML/GEXF/CX) into a full GUI for
+layout and analysis — more analytical power, but installed applications working on files
+rather than a self-contained artifact. (socketscope embeds the Cytoscape.js *library* for
+rendering.)
 
-- [bandwhich](https://github.com/imsnif/bandwhich), [nethogs](https://github.com/raboof/nethogs), `iftop`, `iptraf-ng`, `tcptrack` — terminal tools showing connections/bandwidth per process in real time. Great for "what's using the network *now*"; flat and throughput-focused.
-- [grigio/network-monitor](https://github.com/grigio/network-monitor) — a recent (2025) Rust/GTK4 desktop GUI listing active connections with live I/O stats.
+**Diagram-as-code.** [Mermaid](https://mermaid.js.org/), [D2](https://d2lang.com/),
+[PlantUML](https://plantuml.com/), and [Kroki](https://kroki.io/) (a renderer for many of
+them) are text DSLs that produce diagrams, some with interactive viewers; the DSL generally
+ties the data to its presentation. [Structurizr](https://structurizr.com/) (C4) is the
+exception — it separates a model from the views that select and style it, similar in spirit
+to the data/hints split here, but scoped to software architecture.
 
-**The CLIs socketscope turns into a picture**
+**Data separate from a visualization spec.** GraphML with an external stylesheet, and
+[Vega](https://vega.github.io/)/Vega-Lite's declarative encoding over raw data, embody the
+same "data plus a separable, ignorable spec" idea; neither is a turnkey graph explorer.
 
-- `ss`, `lsof`, `netstat`, `pstree`, `procs` — the flat-list / text-tree tools it exists to make *visual*.
+**Code-structure graphs** (overlapping `cmake_graph.py` / `lspgraph.py`).
+[Sourcetrail](https://github.com/CoatiSoftware/Sourcetrail) was an interactive symbol /
+call-graph explorer (a desktop app that indexes code; discontinued and open-sourced).
+[Doxygen](https://www.doxygen.nl/) emits call/include graphs as static Graphviz images
+alongside HTML docs.
 
-**Windows analogs**
+**For `sockets_graph.py` specifically.** [Weave Scope](https://github.com/weaveworks/scope)
+graphed process/container connections from `/proc`+conntrack (agent + server, now
+unmaintained); [EtherApe](https://etherape.sourceforge.io/) draws live host-traffic graphs;
+`bandwhich`/`nethogs`/`iftop` list live per-process connections; Sysinternals TCPView +
+Process Explorer cover the same ground on Windows; [Cilium Hubble](https://github.com/cilium/hubble)
+and [Pixie](https://px.dev) build eBPF service maps at cluster scale. Those observe *live*
+network state; `sockets_graph.py` takes a one-shot `/proc` snapshot.
 
-- Sysinternals **TCPView** (process → endpoint mapping) + **Process Explorer** (process tree). socketscope is roughly "both, as one graph" for Linux.
-
-**Cluster-scale / eBPF service maps**
-
-- [Cilium Hubble](https://github.com/cilium/hubble), [Pixie](https://px.dev), Caretta, DeepFlow — auto service-connectivity graphs, usually eBPF-based and Kubernetes-scoped. Far more powerful for distributed flows, but they need real infrastructure and work at the service level, not "every socket and the process holding it on one box."
-
-**How socketscope differs:** a single self-contained **offline HTML file** (no agent, no server, no install); a **whole-host `/proc` snapshot** covering TCP/UDP **and** UNIX-domain sockets **plus** the process tree in one view; and an **exploration-first** UI (trace-chain data-flow walk, focus modes, pin, search).
+What's specific to socketscope is the combination rather than any one capability: a static
+offline bundle, interactive exploration, data kept separate from ignorable viz hints, and a
+pipe-friendly generator/viewer split. Each of those exists elsewhere.
 
 ## License
 
