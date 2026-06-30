@@ -1,0 +1,492 @@
+#!/usr/bin/env python3
+"""dirtree_graph - emit a directory tree as a graph model JSON.
+
+A standalone generator for the socketscope viewer. It walks a directory (or reads
+an explicit path list on stdin) and prints ONE JSON graph model to stdout - the
+same generic model socketscope's `sockets` and `cmake_graph.py` produce. It does
+NOT import socketscope.py; the JSON model is the only contract. Pipe it to the
+viewer:
+
+    dirtree_graph.py ~/project | socketscope.py render - > tree.html
+
+Nodes are directories, files, and symlinks (executables also carry an
+`executable` class); edges are parent->child containment plus a distinct
+symlink->target edge when the target is in view. A non-socket demonstration that
+the viewer is domain-agnostic, and a handy directory explorer in its own right.
+
+Stdlib only.
+"""
+import os
+import sys
+import stat
+import pwd
+import grp
+import json
+import socket
+import argparse
+import datetime
+
+NODE_CLASSES = [
+    {"id": "dir-root", "label": "Root directory", "color": "#C9A227"},
+    {"id": "dir", "label": "Directory", "color": "#3F8EE0"},
+    {"id": "file", "label": "File", "color": "#5E8C6A"},
+    {"id": "symlink", "label": "Symlink", "color": "#8A63D2"},
+    # `executable` is a second class a file node also carries (multi-membership).
+    # It's a MODIFIER class: no `color` (so it adds no fill rule that would override
+    # the `file` fill); its green border comes from STYLE and layers on top.
+    {"id": "executable", "label": "Executable"},
+    # Sockets/FIFOs/devices: noisy bulk, hidden by default.
+    {
+        "id": "special",
+        "label": "Special (fifo/dev/sock)",
+        "color": "#9AA0A6",
+        "hidden": True,
+    },
+]
+
+# Edge classes. Containment edges carry both `child` (every containment edge) and
+# a flavor (`dir`/`file`/`link`); symlink->target edges carry `symlink`.
+EDGE_CLASSES = [
+    {"id": "child", "label": "contains", "color": "#c3c8d0"},
+    {"id": "dir", "label": "→ subdirectory", "color": "#9aa6c0"},
+    {"id": "file", "label": "→ file", "color": "#d3d7e0"},
+    {"id": "link", "label": "→ symlink entry", "color": "#cbb8ea"},
+    {"id": "symlink", "label": "symlink target", "color": "#8A63D2"},
+]
+
+# Appearance keyed on dirtree's classes. `edge.dir`/`edge.file` weight the
+# containment edges so the directory skeleton reads; `edge.symlink` is dashed so
+# the symlink->target relationship looks distinct; `node.executable` adds a
+# border that layers over the file fill (multi-membership).
+STYLE = [
+    {
+        "selector": "edge.dir",
+        "style": {"line-color": "#9aa6c0", "target-arrow-color": "#9aa6c0", "width": 2},
+    },
+    {
+        "selector": "edge.file",
+        "style": {"line-color": "#d3d7e0", "target-arrow-color": "#d3d7e0", "width": 1},
+    },
+    {
+        "selector": "edge.symlink",
+        "style": {
+            "line-color": "#8A63D2",
+            "target-arrow-color": "#8A63D2",
+            "line-style": "dashed",
+            "width": 1,
+        },
+    },
+    {
+        "selector": "node.executable",
+        "style": {"border-width": 3, "border-color": "#2FA86E"},
+    },
+]
+
+EDGE_KEY = [
+    "→ arrowhead = contains",
+    "bold = subdirectory",
+    "thin = file",
+    "dashed = symlink target",
+    "green border = executable",
+]
+
+# Follow containment DOWN (a directory -> its whole subtree) and UP (a file ->
+# its ancestor chain). Both key on `edge.child`, which every containment edge
+# carries; symlink-target edges (edge.symlink) are deliberately not followed.
+TRAVERSALS = [
+    {
+        "id": "descendants",
+        "label": "⬇ Descendants",
+        "mode": "flood",
+        "rules": [{"edge": "edge.child", "dir": "out"}],
+    },
+    {
+        "id": "ancestors",
+        "label": "⬆ Path to root",
+        "mode": "flood",
+        "rules": [{"edge": "edge.child", "dir": "in"}],
+    },
+]
+
+# Emphasize subdirectory edges so the directory skeleton contracts tight while
+# files dangle loosely off it - distinct from the built-in `spread` (all edges
+# equal) because dirtree splits containment into `dir` vs `file` classes.
+FORCE_STRUCTURES = [
+    {"id": "skeleton", "label": "directory skeleton", "emphasize": "edge.dir"},
+]
+
+
+def _humansize(n):
+    for unit in ("B", "K", "M", "G", "T"):
+        if n < 1024 or unit == "T":
+            return ("%d%s" % (n, unit)) if unit == "B" else ("%.1f%s" % (n, unit))
+        n /= 1024.0
+
+
+def _owner(uid, gid):
+    try:
+        user = pwd.getpwuid(uid).pw_name
+    except (KeyError, OSError):
+        user = str(uid)
+    try:
+        group = grp.getgrgid(gid).gr_name
+    except (KeyError, OSError):
+        group = str(gid)
+    return user, group
+
+
+def _nid(path):
+    return "d:" + path
+
+
+_FLAVOR = {"dir": "dir", "file": "file", "symlink": "link"}
+
+
+def _classify(lst):
+    m = lst.st_mode
+    if stat.S_ISLNK(m):
+        return "symlink"
+    if stat.S_ISDIR(m):
+        return "dir"
+    if stat.S_ISREG(m):
+        return "file"
+    return "special"
+
+
+def _node(path, lst, ntype, is_root=False):
+    """One node dict from an lstat result. `is_root` -> class dir-root."""
+    uid, gid = lst.st_uid, lst.st_gid
+    user, group = _owner(uid, gid)
+    perms = stat.filemode(lst.st_mode)
+    mode = oct(stat.S_IMODE(lst.st_mode))[2:].zfill(4)
+    size = int(lst.st_size)
+    mtime = int(lst.st_mtime)
+    ctime = int(lst.st_ctime)
+    is_exec = ntype == "file" and bool(
+        lst.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    )
+    label = path if is_root else os.path.basename(path) or path
+    detail = []
+    if ntype == "symlink":
+        try:
+            detail.append("→ %s" % os.readlink(path))
+        except OSError:
+            pass
+    if ntype in ("file", "special") or is_root or ntype == "symlink":
+        detail.append(_humansize(size))
+    full = "%s\n%s  %s:%s  %s\nmodified %s" % (
+        path,
+        perms,
+        user,
+        group,
+        "  ".join(detail),
+        datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
+    )
+    # Multi-membership: an executable file is both `file` and `executable`, so the
+    # executable border layers over the file fill (rather than a bolted-on flag).
+    classes = ["dir-root" if is_root else ntype]
+    if is_exec:
+        classes.append("executable")
+    return {
+        "id": _nid(path),
+        "label": label,
+        "full": full,
+        "classes": classes,
+        "size": size,
+        "mtime": mtime,
+        "ctime": ctime,
+        "uid": uid,
+        "gid": gid,
+        "user": user,
+        "group": group,
+        "mode": mode,
+        "perms": perms,
+    }
+
+
+def _edge(parent_path, child_path, ntype):
+    return {
+        "source": _nid(parent_path),
+        "target": _nid(child_path),
+        "label": "contains",
+        # `child` (every containment edge) + a flavor, so edge.child selects all
+        # containment while edge.dir selects just subdirectories.
+        "classes": ["child", _FLAVOR.get(ntype, "special")],
+    }
+
+
+def _finalize(root, nodes, edges, node_ids, pending_symlinks, truncated):
+    """Add symlink->target edges, drop dangling edges, tally counts, assemble the
+    model. Shared by both the walk and the stdin path-list builders."""
+    # Symlink->target edges only when the target is itself a captured node.
+    for link, tgt in pending_symlinks:
+        if tgt != link and _nid(tgt) in node_ids and _nid(link) in node_ids:
+            edges.append(
+                {
+                    "source": _nid(link),
+                    "target": _nid(tgt),
+                    "label": "→ target",
+                    "classes": ["symlink"],
+                }
+            )
+    edges = [e for e in edges if e["source"] in node_ids and e["target"] in node_ids]
+
+    counts = {"nodes": len(nodes), "edges": len(edges), "by_type": {}, "by_class": {}}
+    for n in nodes:
+        for c in n["classes"]:
+            counts["by_type"][c] = counts["by_type"].get(c, 0) + 1
+    for e in edges:
+        for c in e["classes"]:
+            counts["by_class"][c] = counts["by_class"].get(c, 0) + 1
+
+    meta = {
+        "title": "dirtree — " + root,
+        "host": socket.gethostname(),
+        "captured": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "root_path": root,
+        "truncated": truncated,
+        "counts": counts,
+    }
+    return {
+        "meta": meta,
+        "node_classes": NODE_CLASSES,
+        "edge_classes": EDGE_CLASSES,
+        "style": STYLE,
+        "edge_key": EDGE_KEY,
+        "traversals": TRAVERSALS,
+        "force_structures": FORCE_STRUCTURES,
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def build_walk(root, max_depth=None, max_entries=2000, follow=False, no_files=False):
+    """Walk `root` breadth-first into the graph model: nodes are dirs/files/
+    symlinks, edges are parent->child containment plus symlink->target edges."""
+    root = os.path.abspath(root)
+    nodes, edges, node_ids, pending = [], [], set(), []
+    truncated = False
+
+    try:
+        root_lst = os.lstat(root)
+    except OSError as e:
+        raise SystemExit("dirtree_graph: cannot stat %s: %s" % (root, e))
+    nodes.append(_node(root, root_lst, "dir", is_root=True))
+    node_ids.add(_nid(root))
+
+    # BFS queue of (dir_path, depth). max_entries truncates breadth-first so the
+    # graph stays a connected tree near the root. `seen` holds realpaths of
+    # directories already queued, so following symlinks can't loop.
+    queue = [(root, 0)]
+    seen = {os.path.realpath(root)}
+    while queue:
+        if len(node_ids) >= max_entries:
+            truncated = True
+            break
+        dpath, depth = queue.pop(0)
+        if max_depth is not None and depth >= max_depth:
+            continue
+        try:
+            entries = sorted(os.scandir(dpath), key=lambda e: e.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if len(node_ids) >= max_entries:
+                truncated = True
+                break
+            cpath = entry.path
+            try:
+                lst = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            ntype = _classify(lst)
+            if ntype == "file" and no_files:
+                continue
+            if _nid(cpath) not in node_ids:
+                nodes.append(_node(cpath, lst, ntype))
+                node_ids.add(_nid(cpath))
+            edges.append(_edge(dpath, cpath, ntype))
+            if ntype == "symlink":
+                rp = os.path.realpath(cpath)
+                pending.append((cpath, rp))
+                # Follow a symlink only if asked, only into a directory, and only
+                # to a realpath we haven't already walked (loop guard).
+                if follow and os.path.isdir(cpath) and rp not in seen:
+                    seen.add(rp)
+                    queue.append((cpath, depth + 1))
+            elif ntype == "dir":
+                rp = os.path.realpath(cpath)
+                if rp not in seen:
+                    seen.add(rp)
+                    queue.append((cpath, depth + 1))
+
+    return _finalize(root, nodes, edges, node_ids, pending, truncated)
+
+
+def build_paths(lines, base=None, max_entries=2000, no_files=False):
+    """Build the model from an explicit newline-separated path list on stdin
+    (e.g. `git ls-files | dirtree_graph.py -`). Directory ancestors are
+    synthesized so the listed paths connect into one tree; *which* paths appear is
+    left entirely to the upstream tool (git, find, fd, ...), so this carries no
+    ignore/VCS logic. Relative entries resolve against `base` (e.g. a repo root) --
+    needed because `git ls-files` prints paths relative to the repo root."""
+    resolve_base = os.path.abspath(base) if base else os.getcwd()
+    paths = set()
+    for ln in lines:
+        p = ln.strip()
+        if not p:
+            continue
+        paths.add(
+            os.path.abspath(p if os.path.isabs(p) else os.path.join(resolve_base, p))
+        )
+    paths = sorted(paths)
+    if not paths:
+        raise SystemExit("dirtree_graph: no paths read from stdin")
+    # With an explicit base, root the tree there; otherwise auto-root at the
+    # deepest directory common to every input path.
+    if base:
+        root = resolve_base
+    else:
+        root = paths[0] if len(paths) == 1 else os.path.commonpath(paths)
+        if not os.path.isdir(root):
+            root = os.path.dirname(root)
+
+    nodes, edges, node_ids, pending = [], [], set(), []
+    truncated = False
+
+    def add(path, lst, ntype, is_root=False):
+        node_id = _nid(path)
+        if node_id in node_ids:
+            return True
+        if len(node_ids) >= max_entries:
+            return False
+        nodes.append(_node(path, lst, ntype, is_root=is_root))
+        node_ids.add(node_id)
+        if ntype == "symlink":
+            pending.append((path, os.path.realpath(path)))
+        return True
+
+    try:
+        add(root, os.lstat(root), "dir", is_root=True)
+    except OSError as e:
+        raise SystemExit("dirtree_graph: cannot stat %s: %s" % (root, e))
+
+    for p in paths:
+        rel = os.path.relpath(p, root)
+        if rel == "." or rel.startswith(".."):
+            continue  # the root itself, or outside it (shouldn't happen)
+        cur = root
+        for part in rel.split(os.sep):
+            parent, cur = cur, os.path.join(cur, part)
+            try:
+                lst = os.lstat(cur)
+            except OSError:
+                break  # a missing component severs the rest of the chain
+            ntype = _classify(lst)
+            if cur == p and no_files and ntype == "file":
+                break
+            if not add(cur, lst, ntype):
+                truncated = True
+                break
+            edges.append(_edge(parent, cur, ntype))
+
+    return _finalize(root, nodes, edges, node_ids, pending, truncated)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="dirtree_graph",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Walk a directory tree (or read a path list on stdin) and emit a graph\n"
+            "model JSON for the socketscope viewer. Pipe to: socketscope.py render -"
+        ),
+        epilog=(
+            "Pass '-' as the path to read a newline-separated path list from stdin\n"
+            "instead of walking the filesystem; directory ancestors are synthesized\n"
+            "so the listed paths connect into one tree. Filtering (gitignore, etc.)\n"
+            "is delegated to the upstream tool. Relative entries resolve against -C\n"
+            "(default: cwd) -- e.g. `git ls-files` prints repo-root-relative paths:\n"
+            "  dirtree_graph.py ~/project | socketscope.py render - > tree.html\n"
+            "  git -C ~/p ls-files | dirtree_graph.py - -C ~/p | socketscope.py render -\n"
+            "  find . -name '*.py' | dirtree_graph.py - | socketscope.py render -"
+        ),
+    )
+    ap.add_argument(
+        "path",
+        nargs="?",
+        default=".",
+        help="directory to walk (default: current directory); '-' reads a "
+        "newline-separated path list from stdin instead",
+    )
+    ap.add_argument(
+        "-C",
+        "--directory",
+        default=None,
+        metavar="DIR",
+        help="resolve relative paths from the stdin list ('-' mode) against DIR, "
+        "and root the tree there (default: current directory)",
+    )
+    ap.add_argument(
+        "--max-depth",
+        type=int,
+        default=None,
+        metavar="N",
+        help="limit recursion to N levels below the root (walk mode only)",
+    )
+    ap.add_argument(
+        "--max-entries",
+        type=int,
+        default=2000,
+        metavar="N",
+        help="cap total nodes, truncating breadth-first (default: 2000)",
+    )
+    ap.add_argument(
+        "--follow-symlinks",
+        action="store_true",
+        help="recurse into symlinked directories (off by default; avoids loops)",
+    )
+    ap.add_argument(
+        "--no-files",
+        action="store_true",
+        help="directories only (omit regular files)",
+    )
+    args = ap.parse_args()
+
+    from_stdin = args.path == "-"
+    if not from_stdin and not os.path.exists(args.path):
+        ap.error("no such path: %s" % args.path)
+
+    if from_stdin:
+        model = build_paths(
+            sys.stdin.read().splitlines(),
+            base=args.directory,
+            max_entries=args.max_entries,
+            no_files=args.no_files,
+        )
+    else:
+        model = build_walk(
+            args.path,
+            max_depth=args.max_depth,
+            max_entries=args.max_entries,
+            follow=args.follow_symlinks,
+            no_files=args.no_files,
+        )
+
+    json.dump(model, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    c = model["meta"]["counts"]
+    print(
+        "dirtree_graph: %s — %d nodes, %d edges%s"
+        % (
+            model["meta"]["title"],
+            c["nodes"],
+            c["edges"],
+            " [truncated]" if model["meta"].get("truncated") else "",
+        ),
+        file=sys.stderr,
+    )
+
+
+if __name__ == "__main__":
+    main()

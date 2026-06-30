@@ -18,10 +18,8 @@ It is a point-in-time snapshot; re-run to refresh.
 import os
 import sys
 import pwd
-import grp
 import json
 import socket
-import stat
 import gzip
 import base64
 import argparse
@@ -140,104 +138,6 @@ TRAVERSALS = [
 FORCE_STRUCTURES = [
     {"id": "tree", "label": "process tree", "emphasize": "edge.tree"},
     {"id": "flow", "label": "data flow", "emphasize": "edge.io"},
-]
-
-# ---------------------------------------------------------------------------
-# dirtree generator constants (a second, non-socket model for the same viewer)
-# ---------------------------------------------------------------------------
-# The dirtree subcommand walks a directory and emits the same generic model the
-# socket capture does, proving the viewer is domain-agnostic. These blocks are
-# the dirtree analogue of NODE_CLASSES / EDGE_CLASSES / DOMAIN_STYLE / EDGE_KEY /
-# TRAVERSALS / FORCE_STRUCTURES above; build_dirtree assembles them into the model.
-DIRTREE_NODE_CLASSES = [
-    {"id": "dir-root", "label": "Root directory", "color": "#C9A227"},
-    {"id": "dir", "label": "Directory", "color": "#3F8EE0"},
-    {"id": "file", "label": "File", "color": "#5E8C6A"},
-    {"id": "symlink", "label": "Symlink", "color": "#8A63D2"},
-    # `executable` is a second class a file node also carries (multi-membership).
-    # It's a MODIFIER class: no `color` (so it adds no fill rule that would override
-    # the `file` fill); its green border comes from DIRTREE_STYLE and layers on top.
-    {"id": "executable", "label": "Executable"},
-    # Sockets/FIFOs/devices: noisy bulk, hidden by default like unix sockets.
-    {
-        "id": "special",
-        "label": "Special (fifo/dev/sock)",
-        "color": "#9AA0A6",
-        "hidden": True,
-    },
-]
-
-# Edge classes. Containment edges carry both `child` (every containment edge) and
-# a flavor (`dir`/`file`/`link`); symlink->target edges carry `symlink`.
-DIRTREE_EDGE_CLASSES = [
-    {"id": "child", "label": "contains", "color": "#c3c8d0"},
-    {"id": "dir", "label": "→ subdirectory", "color": "#9aa6c0"},
-    {"id": "file", "label": "→ file", "color": "#d3d7e0"},
-    {"id": "link", "label": "→ symlink entry", "color": "#cbb8ea"},
-    {"id": "symlink", "label": "symlink target", "color": "#8A63D2"},
-]
-
-# Appearance keyed on dirtree's classes. `edge.dir`/`edge.file` weight the
-# containment edges so the directory skeleton reads; `edge.symlink` is dashed so
-# the symlink->target relationship looks distinct; `node.executable` adds a
-# border that layers over the file fill (multi-membership). Broader
-# data->appearance mapping (size/mtime colormaps) is a future "visualization
-# layers" concept; see BACKLOG.
-DIRTREE_STYLE = [
-    {
-        "selector": "edge.dir",
-        "style": {"line-color": "#9aa6c0", "target-arrow-color": "#9aa6c0", "width": 2},
-    },
-    {
-        "selector": "edge.file",
-        "style": {"line-color": "#d3d7e0", "target-arrow-color": "#d3d7e0", "width": 1},
-    },
-    {
-        "selector": "edge.symlink",
-        "style": {
-            "line-color": "#8A63D2",
-            "target-arrow-color": "#8A63D2",
-            "line-style": "dashed",
-            "width": 1,
-        },
-    },
-    {
-        "selector": "node.executable",
-        "style": {"border-width": 3, "border-color": "#2FA86E"},
-    },
-]
-
-DIRTREE_EDGE_KEY = [
-    "→ arrowhead = contains",
-    "bold = subdirectory",
-    "thin = file",
-    "dashed = symlink target",
-    "green border = executable",
-]
-
-# Follow containment DOWN (a directory -> its whole subtree) and UP (a file ->
-# its ancestor chain). Both key on `edge.child`, which every containment edge
-# carries; symlink-target edges (edge.symlink) are deliberately not followed.
-DIRTREE_TRAVERSALS = [
-    {
-        "id": "descendants",
-        "label": "⬇ Descendants",
-        "mode": "flood",
-        "rules": [{"edge": "edge.child", "dir": "out"}],
-    },
-    {
-        "id": "ancestors",
-        "label": "⬆ Path to root",
-        "mode": "flood",
-        "rules": [{"edge": "edge.child", "dir": "in"}],
-    },
-]
-
-# Emphasize subdirectory edges so the directory skeleton contracts tight while
-# files dangle loosely off it - distinct from the built-in `spread` (all edges
-# equal) because dirtree splits containment into `dir` vs `file` classes.
-DIRTREE_FORCE_STRUCTURES = [
-    {"id": "skeleton", "label": "directory skeleton", "emphasize": "edge.dir"},
 ]
 
 TCP_STATES = {
@@ -704,293 +604,6 @@ def _io_label(s):
 
 
 # ---------------------------------------------------------------------------
-# C. dirtree model: walk a directory -> the same generic graph model
-# ---------------------------------------------------------------------------
-def _humansize(n):
-    for unit in ("B", "K", "M", "G", "T"):
-        if n < 1024 or unit == "T":
-            return ("%d%s" % (n, unit)) if unit == "B" else ("%.1f%s" % (n, unit))
-        n /= 1024.0
-
-
-def _owner(uid, gid):
-    try:
-        user = pwd.getpwuid(uid).pw_name
-    except (KeyError, OSError):
-        user = str(uid)
-    try:
-        group = grp.getgrgid(gid).gr_name
-    except (KeyError, OSError):
-        group = str(gid)
-    return user, group
-
-
-def _dt_nid(path):
-    return "d:" + path
-
-
-_DT_FLAVOR = {"dir": "dir", "file": "file", "symlink": "link"}
-
-
-def _dt_classify(lst):
-    m = lst.st_mode
-    if stat.S_ISLNK(m):
-        return "symlink"
-    if stat.S_ISDIR(m):
-        return "dir"
-    if stat.S_ISREG(m):
-        return "file"
-    return "special"
-
-
-def _dt_node(path, lst, ntype, is_root=False):
-    """One dirtree node dict from an lstat result. `is_root` -> type dir-root."""
-    uid, gid = lst.st_uid, lst.st_gid
-    user, group = _owner(uid, gid)
-    perms = stat.filemode(lst.st_mode)
-    mode = oct(stat.S_IMODE(lst.st_mode))[2:].zfill(4)
-    size = int(lst.st_size)
-    mtime = int(lst.st_mtime)
-    ctime = int(lst.st_ctime)
-    is_exec = ntype == "file" and bool(
-        lst.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    )
-    label = path if is_root else os.path.basename(path) or path
-    detail = []
-    if ntype == "symlink":
-        try:
-            detail.append("→ %s" % os.readlink(path))
-        except OSError:
-            pass
-    if ntype in ("file", "special") or is_root or ntype == "symlink":
-        detail.append(_humansize(size))
-    full = "%s\n%s  %s:%s  %s\nmodified %s" % (
-        path,
-        perms,
-        user,
-        group,
-        "  ".join(detail),
-        datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
-    )
-    # Multi-membership: an executable file is both `file` and `executable`, so the
-    # executable border layers over the file fill (rather than a bolted-on flag).
-    classes = ["dir-root" if is_root else ntype]
-    if is_exec:
-        classes.append("executable")
-    return {
-        "id": _dt_nid(path),
-        "label": label,
-        "full": full,
-        "classes": classes,
-        "size": size,
-        "mtime": mtime,
-        "ctime": ctime,
-        "uid": uid,
-        "gid": gid,
-        "user": user,
-        "group": group,
-        "mode": mode,
-        "perms": perms,
-    }
-
-
-def _dt_edge(parent_path, child_path, ntype):
-    return {
-        "source": _dt_nid(parent_path),
-        "target": _dt_nid(child_path),
-        "label": "contains",
-        # `child` (every containment edge) + a flavor, so edge.child selects all
-        # containment while edge.dir selects just subdirectories.
-        "classes": ["child", _DT_FLAVOR.get(ntype, "special")],
-    }
-
-
-def _dt_finalize(root, nodes, edges, node_ids, pending_symlinks, truncated):
-    """Add symlink->target edges, drop dangling edges, tally counts, assemble the
-    model. Shared by both the walk and the stdin path-list builders."""
-    # Symlink->target edges only when the target is itself a captured node
-    # (mirrors socket peer edges, which only link when both ends are present).
-    for link, tgt in pending_symlinks:
-        if tgt != link and _dt_nid(tgt) in node_ids and _dt_nid(link) in node_ids:
-            edges.append(
-                {
-                    "source": _dt_nid(link),
-                    "target": _dt_nid(tgt),
-                    "label": "→ target",
-                    "classes": ["symlink"],
-                }
-            )
-    edges = [e for e in edges if e["source"] in node_ids and e["target"] in node_ids]
-
-    counts = {"nodes": len(nodes), "edges": len(edges), "by_type": {}, "by_class": {}}
-    for n in nodes:
-        for c in n["classes"]:
-            counts["by_type"][c] = counts["by_type"].get(c, 0) + 1
-    for e in edges:
-        for c in e["classes"]:
-            counts["by_class"][c] = counts["by_class"].get(c, 0) + 1
-
-    meta = {
-        "title": "socketscope — " + root,
-        "host": socket.gethostname(),
-        "captured": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "root_path": root,
-        "truncated": truncated,
-        "counts": counts,
-    }
-    return (
-        {
-            "meta": meta,
-            "node_classes": DIRTREE_NODE_CLASSES,
-            "edge_classes": DIRTREE_EDGE_CLASSES,
-            "style": DIRTREE_STYLE,
-            "edge_key": DIRTREE_EDGE_KEY,
-            "traversals": DIRTREE_TRAVERSALS,
-            "force_structures": DIRTREE_FORCE_STRUCTURES,
-            "nodes": nodes,
-            "edges": edges,
-        },
-        None,
-    )
-
-
-def build_dirtree(root, max_depth=None, max_entries=2000, follow=False, no_files=False):
-    """Walk `root` breadth-first into the generic graph model (same shape as
-    build_graph): nodes are dirs/files/symlinks, edges are parent->child
-    containment plus distinct symlink->target edges. Returns (model, None)."""
-    root = os.path.abspath(root)
-    nodes, edges, node_ids, pending = [], [], set(), []
-    truncated = False
-
-    try:
-        root_lst = os.lstat(root)
-    except OSError as e:
-        raise SystemExit("dirtree: cannot stat %s: %s" % (root, e))
-    nodes.append(_dt_node(root, root_lst, "dir", is_root=True))
-    node_ids.add(_dt_nid(root))
-
-    # BFS queue of (dir_path, depth). max_entries truncates breadth-first so the
-    # graph stays a connected tree near the root. `seen` holds realpaths of
-    # directories already queued, so following symlinks can't loop.
-    queue = [(root, 0)]
-    seen = {os.path.realpath(root)}
-    while queue:
-        if len(node_ids) >= max_entries:
-            truncated = True
-            break
-        dpath, depth = queue.pop(0)
-        if max_depth is not None and depth >= max_depth:
-            continue
-        try:
-            entries = sorted(os.scandir(dpath), key=lambda e: e.name)
-        except OSError:
-            continue
-        for entry in entries:
-            if len(node_ids) >= max_entries:
-                truncated = True
-                break
-            cpath = entry.path
-            try:
-                lst = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            ntype = _dt_classify(lst)
-            if ntype == "file" and no_files:
-                continue
-            if _dt_nid(cpath) not in node_ids:
-                nodes.append(_dt_node(cpath, lst, ntype))
-                node_ids.add(_dt_nid(cpath))
-            edges.append(_dt_edge(dpath, cpath, ntype))
-            if ntype == "symlink":
-                rp = os.path.realpath(cpath)
-                pending.append((cpath, rp))
-                # Follow a symlink only if asked, only into a directory, and only
-                # to a realpath we haven't already walked (loop guard).
-                if follow and os.path.isdir(cpath) and rp not in seen:
-                    seen.add(rp)
-                    queue.append((cpath, depth + 1))
-            elif ntype == "dir":
-                rp = os.path.realpath(cpath)
-                if rp not in seen:
-                    seen.add(rp)
-                    queue.append((cpath, depth + 1))
-
-    return _dt_finalize(root, nodes, edges, node_ids, pending, truncated)
-
-
-def build_dirtree_paths(lines, base=None, max_entries=2000, no_files=False):
-    """Build the dirtree model from an explicit newline-separated path list on
-    stdin (e.g. `git ls-files | socketscope.py dirtree -`). Directory ancestors
-    are synthesized so the listed paths connect into one tree; *which* paths
-    appear is left entirely to the upstream tool (git, find, fd, ...), which is
-    why dirtree itself carries no ignore/VCS logic. Relative entries resolve
-    against `base` (e.g. a repo root) -- needed because `git ls-files` prints
-    paths relative to the repo root, not necessarily the cwd. Returns
-    (model, None)."""
-    resolve_base = os.path.abspath(base) if base else os.getcwd()
-    paths = set()
-    for ln in lines:
-        p = ln.strip()
-        if not p:
-            continue
-        paths.add(
-            os.path.abspath(p if os.path.isabs(p) else os.path.join(resolve_base, p))
-        )
-    paths = sorted(paths)
-    if not paths:
-        raise SystemExit("dirtree: no paths read from stdin")
-    # With an explicit base, root the tree there (honor the user's intent);
-    # otherwise auto-root at the deepest directory common to every input path.
-    if base:
-        root = resolve_base
-    else:
-        root = paths[0] if len(paths) == 1 else os.path.commonpath(paths)
-        if not os.path.isdir(root):
-            root = os.path.dirname(root)
-
-    nodes, edges, node_ids, pending = [], [], set(), []
-    truncated = False
-
-    def add(path, lst, ntype, is_root=False):
-        node_id = _dt_nid(path)
-        if node_id in node_ids:
-            return True
-        if len(node_ids) >= max_entries:
-            return False
-        nodes.append(_dt_node(path, lst, ntype, is_root=is_root))
-        node_ids.add(node_id)
-        if ntype == "symlink":
-            pending.append((path, os.path.realpath(path)))
-        return True
-
-    try:
-        add(root, os.lstat(root), "dir", is_root=True)
-    except OSError as e:
-        raise SystemExit("dirtree: cannot stat %s: %s" % (root, e))
-
-    for p in paths:
-        rel = os.path.relpath(p, root)
-        if rel == "." or rel.startswith(".."):
-            continue  # the root itself, or outside it (shouldn't happen)
-        cur = root
-        for part in rel.split(os.sep):
-            parent, cur = cur, os.path.join(cur, part)
-            try:
-                lst = os.lstat(cur)
-            except OSError:
-                break  # a missing component severs the rest of the chain
-            ntype = _dt_classify(lst)
-            if cur == p and no_files and ntype == "file":
-                break
-            if not add(cur, lst, ntype):
-                truncated = True
-                break
-            edges.append(_dt_edge(parent, cur, ntype))
-
-    return _dt_finalize(root, nodes, edges, node_ids, pending, truncated)
-
-
-# ---------------------------------------------------------------------------
 # HTML emission
 # ---------------------------------------------------------------------------
 def jdump(obj):
@@ -1037,9 +650,8 @@ def emit_output(text, base, ext, to_stdout):
 
 
 def resolve_outputs(args, ap, default_base):
-    """Resolve (base, to_stdout, write_html, write_json) from the shared output
-    args, with fail-fast validation. Shared by the capture + dirtree generators
-    (called before the scan/walk so bad combos error early)."""
+    """Resolve (base, to_stdout, write_html, write_json) from the output args,
+    with fail-fast validation (called before the scan so bad combos error early)."""
     if args.out is None:
         base, to_stdout = default_base, False
     else:
@@ -1182,38 +794,6 @@ def do_capture(args, ap):
 
 
 # ---------------------------------------------------------------------------
-# dirtree: walk a directory -> model -> html [+ json]
-# ---------------------------------------------------------------------------
-def do_dirtree(args, ap):
-    from_stdin = args.path == "-"
-    if not from_stdin and not os.path.exists(args.path):
-        ap.error("dirtree: no such path: %s" % args.path)
-    now = datetime.datetime.now().astimezone()
-    base, to_stdout, write_html, write_json = resolve_outputs(
-        args, ap, "dirtree-" + now.strftime("%Y-%m-%d-%H-%M-%S")
-    )
-    if from_stdin:
-        # Path list on stdin: filtering (gitignore, etc.) is the upstream tool's
-        # job -- e.g. `git ls-files | socketscope.py dirtree -`.
-        model, _ = build_dirtree_paths(
-            sys.stdin.read().splitlines(),
-            base=args.directory,
-            max_entries=args.max_entries,
-            no_files=args.no_files,
-        )
-    else:
-        model, _ = build_dirtree(
-            args.path,
-            max_depth=args.max_depth,
-            max_entries=args.max_entries,
-            follow=args.follow_symlinks,
-            no_files=args.no_files,
-        )
-    wrote = write_outputs(model, base, to_stdout, write_html, write_json)
-    print_summary(model, wrote)
-
-
-# ---------------------------------------------------------------------------
 # render: existing snapshot JSON -> html (polls nothing)
 # ---------------------------------------------------------------------------
 def do_render(args, ap):
@@ -1269,7 +849,6 @@ def main():
         epilog=(
             "subcommands:\n"
             "  sockets   capture open sockets + processes from /proc (the default)\n"
-            "  dirtree   walk a directory tree into the same graph model\n"
             "  render    rebuild HTML from a saved snapshot JSON (no system polling)\n"
             "\n"
             "examples:\n"
@@ -1277,19 +856,19 @@ def main():
             "  sudo socketscope.py --json           also write socketscope-<ts>.json\n"
             "  sudo socketscope.py --json --no-html -o - | jq .   stream JSON to a pipe\n"
             "  socketscope.py --ignore-uds -o net   unprivileged -> net.html (less noise)\n"
-            "  socketscope.py dirtree ~/project -o tree    directory tree -> tree.html\n"
             "  socketscope.py render snap.json > view.html   re-render a saved snapshot\n"
             "\n"
             "Running with no subcommand is the same as 'sockets'. Output is a\n"
             "point-in-time snapshot; the base name defaults to a timestamp\n"
-            "(<generator>-YYYY-MM-DD-HH-MM-SS) so runs don't overwrite each other.\n"
+            "(socketscope-YYYY-MM-DD-HH-MM-SS) so runs don't overwrite each other.\n"
             "The .html / .json extension is appended automatically. See 'sockets -h',\n"
-            "'dirtree -h', 'render -h' for per-subcommand options."
+            "'render -h' for per-subcommand options. Other graphs come from standalone\n"
+            "generators (dirtree_graph.py, cmake_graph.py) piped to 'render'."
         ),
     )
 
-    # Output flags shared by the generators (sockets + dirtree), via a parent
-    # parser so they aren't duplicated. render has its own (stdout-default) -o.
+    # Output flags for the sockets generator, via a parent parser (render has its
+    # own stdout-default -o).
     common = argparse.ArgumentParser(add_help=False)
     cout = common.add_argument_group("output")
     cout.add_argument(
@@ -1357,70 +936,6 @@ def main():
         "--ignore-kernel", action="store_true", help="exclude kernel threads"
     )
 
-    # dirtree (a second, non-socket generator for the same viewer)
-    dp = sub.add_parser(
-        "dirtree",
-        parents=[common],
-        help="walk a directory tree into the graph model",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=(
-            "Walk a directory tree and emit the same generic graph model the "
-            "socket capture does (nodes = files/dirs, edges = containment plus "
-            "symlink targets). A non-socket demonstration that the viewer is "
-            "domain-agnostic, and a handy directory explorer in its own right."
-        ),
-        epilog=(
-            "Pass '-' as the path to read a newline-separated path list from stdin\n"
-            "instead of walking the filesystem; directory ancestors are synthesized\n"
-            "so the listed paths connect into one tree. Filtering (gitignore, etc.)\n"
-            "is delegated to the upstream tool. Relative entries resolve against -C\n"
-            "(default: cwd) -- e.g. `git ls-files` prints repo-root-relative paths:\n"
-            "  git -C ~/project ls-files | socketscope.py dirtree - -C ~/project -o repo\n"
-            "  find . -name '*.py' | socketscope.py dirtree -"
-        ),
-    )
-    dp.add_argument(
-        "path",
-        nargs="?",
-        default=".",
-        help="directory to walk (default: current directory); '-' reads a "
-        "newline-separated path list from stdin instead",
-    )
-    dp.add_argument(
-        "-C",
-        "--directory",
-        default=None,
-        metavar="DIR",
-        help="resolve relative paths from the stdin list ('-' mode) against DIR, "
-        "and root the tree there (default: current directory). Use this when the "
-        "list is relative to elsewhere, e.g. a repo root from `git ls-files`.",
-    )
-    dp.add_argument(
-        "--max-depth",
-        type=int,
-        default=None,
-        metavar="N",
-        help="limit recursion to N levels below the root (walk mode only; "
-        "default: unlimited)",
-    )
-    dp.add_argument(
-        "--max-entries",
-        type=int,
-        default=2000,
-        metavar="N",
-        help="cap total nodes, truncating breadth-first (default: 2000)",
-    )
-    dp.add_argument(
-        "--follow-symlinks",
-        action="store_true",
-        help="recurse into symlinked directories (off by default; avoids loops)",
-    )
-    dp.add_argument(
-        "--no-files",
-        action="store_true",
-        help="directories only (omit regular files)",
-    )
-
     # render (unchanged)
     rp = sub.add_parser(
         "render",
@@ -1450,14 +965,12 @@ def main():
     # (bare invocation, or leading flags like `--json`), default to `sockets` so
     # the historical top-level usage keeps working. `-h`/`--help` stay top-level.
     argv = sys.argv[1:]
-    if not argv or argv[0] not in ("sockets", "dirtree", "render", "-h", "--help"):
+    if not argv or argv[0] not in ("sockets", "render", "-h", "--help"):
         argv = ["sockets"] + argv
     args = ap.parse_args(argv)
 
     if args.command == "render":
         do_render(args, ap)
-    elif args.command == "dirtree":
-        do_dirtree(args, ap)
     else:
         do_capture(args, ap)
 

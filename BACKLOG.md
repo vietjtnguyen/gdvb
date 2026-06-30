@@ -34,17 +34,18 @@ Check things off as they land.
       block, each emphasizes an edge selector; spring weighting unified to one
       per-edge weight; built-in `spread` + `distance from selected`. This was the last
       domain-coupled viewer feature — the viewer is now fully generic over the JSON.
-- [x] **`dirtree` subcommand** — a second, non-socket model generator that walks a
+- [x] **`dirtree_graph.py` generator** — a non-socket model generator that walks a
       directory tree (nodes = files/dirs/symlinks, edges = containment + distinct
       symlink→target edges) into the same generic model, proving the viewer is
-      domain-agnostic. CLI restructured into `sockets`/`dirtree`/`render`; bare
-      invocation still defaults to `sockets`. Carries dirtree-specific `style`
-      (exec files, dashed symlinks), traversals (Descendants / Path to root), and a
-      `directory skeleton` force structure, plus per-node `size`/`mtime`/`ctime`/
-      `user`/`group`/`perms`/`exec` metadata. Passing `-` reads a newline-separated
-      path list from stdin (ancestors synthesized to connect them), so filtering —
-      gitignore, etc. — is delegated to the upstream tool (`git ls-files | … dirtree -`)
-      rather than reimplemented here.
+      domain-agnostic. Carries dirtree-specific `style` (exec files, dashed symlinks),
+      traversals (Descendants / Path to root), a `directory skeleton` force structure,
+      and per-node `size`/`mtime`/`ctime`/`user`/`group`/`perms` metadata. Passing `-`
+      reads a newline-separated path list from stdin (ancestors synthesized to connect
+      them), so filtering — gitignore, etc. — is delegated to the upstream tool
+      (`git ls-files | dirtree_graph.py -`). Originally a `dirtree` subcommand of
+      socketscope.py; **split out into a standalone script** (piped to `render`) once the
+      "model is the seam" architecture was established — socketscope.py is now just the
+      renderer + the `sockets` generator.
 - [x] **Make the viewer truly field-generic.** It previously copied only a fixed
       allowlist (`id/label/full/type/listen`) into Cytoscape element data, so custom
       fields couldn't drive selectors — `listen` was hardcoded and dirtree's

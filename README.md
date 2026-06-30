@@ -42,7 +42,7 @@ sudo python3 socketscope.py --json --no-html -o - | jq .   # stream JSON to a pi
 socketscope.py --ignore-uds -o net                   # unprivileged -> net.html
 ```
 
-There are three subcommands — **`sockets`** (capture from `/proc`, the default), **`dirtree`** (walk a directory tree), and **`render`** (rebuild HTML from a saved snapshot). Running with **no subcommand is the same as `sockets`**, so the historical usage above is unchanged.
+There are two subcommands — **`sockets`** (capture from `/proc`, the default) and **`render`** (rebuild HTML from a saved snapshot). Running with **no subcommand is the same as `sockets`**, so the historical usage above is unchanged. Other kinds of graph come from **standalone generator scripts** (e.g. `dirtree_graph.py`, `cmake_graph.py`) that emit the same JSON model and pipe to `render` — see [Other generators](#other-generators-the-model-is-the-seam).
 
 **Run as root (`sudo`) for the full picture.** Unprivileged, the kernel only lets you see the file descriptors of your *own* processes, so most sockets can't be attributed to a process. socketscope still works — it just shows less, and prints a hint to re-run with `sudo`. The capture summary always reports how many sockets it couldn't attribute.
 
@@ -65,39 +65,38 @@ socketscope.py --json --no-html -o - | socketscope.py render   # capture | rende
 
 `render` is a plain filter: it reads the snapshot from a **file argument** or, if omitted (or given `-`), from **stdin**, and writes HTML to **stdout** unless you pass `-o NAME` (→ `NAME.html`). It polls nothing, so it needs no privileges; the rendered HTML reflects the snapshot's *original* host and capture time. Because the model fully determines the output, `render` of a capture's `.json` reproduces that capture's `.html` exactly.
 
-### Visualizing a directory tree
-
-The viewer's data model is a generic typed directed graph, not a socket-specific one. The **`dirtree`** subcommand demonstrates that (and is handy in its own right): it walks a directory into the **same** model — nodes are directories, files, and symlinks; edges are parent→child containment, plus a **distinct dashed edge** from each symlink to its target when the target is in view.
-
-```bash
-socketscope.py dirtree ~/project -o tree     # -> tree.html
-socketscope.py dirtree / --max-depth 3        # shallow, whole-system
-socketscope.py dirtree . --no-files           # directories only
-socketscope.py dirtree ~/project --json --no-html -o - | socketscope.py render   # dirtree | render
-```
-
-It ships its own styling and exploration tools, all carried in the JSON: executable files get a green border; the **Descendants** / **Path to root** traverse tools walk down/up the tree; and a **directory skeleton** force structure contracts the subdirectory edges so files dangle off the directory backbone. Each node also carries `size`, `mtime`/`ctime`, owner `user`/`group`, and `perms` (shown in the tooltip; reserved for future colormap layers). `--max-entries` (default 2000) caps the node count, truncating breadth-first so the result stays a connected tree near the root; symlinked directories aren't recursed into unless you pass `--follow-symlinks`.
-
-**Feeding it a specific set of paths.** Pass `-` as the path and `dirtree` reads a newline-separated path list from **stdin** instead of walking the filesystem, synthesizing the directory ancestors needed to connect them into one tree. This keeps `dirtree` free of any VCS/ignore logic and lets you compose it with whatever tool already knows which paths matter:
-
-```bash
-git ls-files | socketscope.py dirtree - -o repo      # only Git-tracked files (respects .gitignore)
-find . -name '*.py' | socketscope.py dirtree -        # just the Python sources
-fd -t f --changed-within 1d | socketscope.py dirtree -   # recently-touched files
-```
-
-Relative entries resolve against **`-C`/`--directory`** (default: the current directory), which also becomes the tree root. This matters when the list is relative to somewhere other than your cwd — notably `git ls-files`, which prints paths relative to the **repo root**:
-
-```bash
-git -C ~/project ls-files | socketscope.py dirtree - -C ~/project -o repo
-```
-
 ### Other generators (the model is the seam)
 
-The viewer renders one generic JSON model, so anything that emits that shape can be
-visualized — the generator doesn't even need to live in this script. **`cmake_graph.py`**
-is a standalone example: it reads a CMake project's [File API](https://cmake.org/cmake/help/latest/manual/cmake-file-api.7.html)
-and emits the target/dependency/source graph, then pipes to `render`:
+The viewer renders one generic JSON model, so **anything that emits that shape can be
+visualized** — a generator doesn't need to live in `socketscope.py`. Standalone generator
+scripts build the model and pipe it to `render`; they import nothing from the viewer (the
+JSON model is the only contract).
+
+**`dirtree_graph.py`** — walk a directory into the model: nodes are directories, files,
+and symlinks; edges are parent→child containment plus a **distinct dashed edge** from each
+symlink to its target. Executable files get a green border; it ships **Descendants** /
+**Path to root** traversals and a **directory skeleton** force structure, and each node
+carries `size`/`mtime`/`ctime`/owner/`perms` in its tooltip.
+
+```bash
+dirtree_graph.py ~/project | socketscope.py render - > tree.html
+dirtree_graph.py / --max-depth 3 | socketscope.py render -      # shallow, whole-system
+dirtree_graph.py . --no-files  | socketscope.py render -        # directories only
+```
+
+Pass `-` as the path and it reads a newline-separated path list from **stdin** instead of
+walking, synthesizing the ancestor directories needed to connect them — so filtering
+(gitignore, etc.) is delegated to whatever upstream tool already knows which paths matter.
+Relative entries resolve against **`-C`/`--directory`** (which also becomes the root) —
+needed for `git ls-files`, whose paths are relative to the repo root:
+
+```bash
+git -C ~/p ls-files | dirtree_graph.py - -C ~/p | socketscope.py render -   # Git-tracked only
+find . -name '*.py'  | dirtree_graph.py -        | socketscope.py render -
+```
+
+**`cmake_graph.py`** — read a CMake project's [File API](https://cmake.org/cmake/help/latest/manual/cmake-file-api.7.html)
+and emit the target/dependency/source graph:
 
 ```bash
 cmake_graph.py build | socketscope.py render - > cmake.html   # targets, deps, source files
@@ -108,8 +107,8 @@ Targets are colored by type (executable / static-library / …), edges are `link
 (target→dependency) and `source` (target→file); it's a real dependency **DAG**, so the
 **Topo BFS** static layout and the *Depended on by* traversal (impact analysis) are the
 natural tools. Source-file nodes start hidden — toggle the **source** node class on to
-reveal them. This generator imports nothing from `socketscope.py`; the JSON model is the
-only contract.
+reveal them; CMake-internal `.rule`/generated stubs are split into a separate, also-hidden
+**generated** class.
 
 ### Filtering at capture time
 
