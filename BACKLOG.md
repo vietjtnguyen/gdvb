@@ -75,11 +75,17 @@ Check things off as they land.
       validating the "model is the seam" architecture. Targets classed by type; `link`
       (target→dep) + `source` (target→file) edges; source nodes start hidden. A real
       dependency DAG, so Topo BFS + "Depended on by" shine.
-- [ ] **LSP symbol/call-graph generator** (clangd-first, standalone) — the next big one.
-      Fully scoped in memory `project_socketscope_lsp_generator.md`: drive an LSP server
-      over stdio JSON-RPC, build call/type-hierarchy + reference graphs, seed+bounded to
-      avoid hairballs. Test-ready against `orchard/` (clangd 14 + compile_commands.json
-      present). Deferred behind the CMake generator.
+- [x] **`lspgraph.py` — LSP call-graph generator** (clangd-first, standalone). Drives a
+      language server over stdio JSON-RPC (minimal `Content-Length` client), waits for the
+      background index, resolves seeds (`--file` → a file's functions, `--seed NAME` →
+      `workspace/symbol`), and walks `callHierarchy/incomingCalls` outward to `--depth`
+      (capped by `--max-nodes`) into a caller→callee graph. Nodes classed by SymbolKind
+      (function/method/constructor + a `seed` modifier border); Callers/Callees traversals
+      + Topo BFS. **clangd 14 only implements incomingCalls** (callers / impact direction;
+      outgoingCalls returns empty), and clangd starts indexing only after the first
+      `didOpen` — both handled. Verified against `orchard/`.
+      Future modes (still open): type-hierarchy + reference graphs; `--direction` once a
+      server supports outgoingCalls; whole-project `--all`; other servers via `--server`.
 - [x] Start this backlog
 
 ## Collector / data

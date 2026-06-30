@@ -1,0 +1,548 @@
+#!/usr/bin/env python3
+"""lspgraph - emit a symbol call graph from a language server, as JSON.
+
+A standalone generator for the socketscope viewer. It drives a language server
+(clangd by default) over stdio JSON-RPC, walks the CALL HIERARCHY outward from
+one or more seed symbols, and prints ONE JSON graph model to stdout - the same
+generic model the other generators produce. It does NOT import socketscope.py;
+the JSON model is the only contract. Pipe it to the viewer:
+
+    lspgraph.py <project> --file src/foo.cpp | socketscope.py > calls.html
+    lspgraph.py <project> --seed planPath   | socketscope.py > calls.html
+
+The graph is built from `callHierarchy/incomingCalls` (who calls X), walking UP
+the call graph from the seeds - the impact-analysis direction ("what breaks if I
+change this"). Edges are directed caller->callee, so the viewer navigates either
+way. (clangd 14 doesn't implement outgoingCalls; callers are what's available.)
+
+Requires the language server on PATH (clangd >= the call-hierarchy versions) and,
+for clangd, a compile_commands.json. Stdlib only.
+"""
+import os
+import sys
+import glob
+import json
+import time
+import select
+import socket
+import argparse
+import datetime
+import subprocess
+
+# LSP SymbolKind -> our node class (we only keep callables).
+KIND_CLASS = {6: "method", 9: "constructor", 12: "function"}
+
+NODE_CLASSES = [
+    {"id": "function", "label": "Function", "color": "#3F8EE0"},
+    {"id": "method", "label": "Method", "color": "#2FA86E"},
+    {"id": "constructor", "label": "Constructor", "color": "#C9A227"},
+    # `seed` is a modifier class on the symbols the walk started from: no color
+    # (so it doesn't override the kind fill), just a border from STYLE.
+    {"id": "seed", "label": "Seed symbol"},
+]
+
+EDGE_CLASSES = [
+    {"id": "call", "label": "calls", "color": "#5566AA"},
+]
+
+STYLE = [
+    {
+        "selector": "edge.call",
+        "style": {"width": 2, "line-color": "#5566AA", "target-arrow-color": "#5566AA"},
+    },
+    {
+        "selector": "node.seed",
+        "style": {"border-width": 3, "border-color": "#E0533F"},
+    },
+]
+
+EDGE_KEY = [
+    "→ arrowhead = caller → callee",
+    "red border = seed symbol",
+]
+
+# Edges are caller->callee. "Callers" floods upstream (in), "Callees" downstream
+# (out) within the captured subgraph.
+TRAVERSALS = [
+    {
+        "id": "callers",
+        "label": "⬆ Callers",
+        "mode": "flood",
+        "rules": [{"edge": "edge.call", "dir": "in"}],
+    },
+    {
+        "id": "callees",
+        "label": "⬇ Callees",
+        "mode": "flood",
+        "rules": [{"edge": "edge.call", "dir": "out"}],
+    },
+]
+
+FORCE_STRUCTURES = [
+    {"id": "calls", "label": "call graph", "emphasize": "edge.call"},
+]
+
+
+# ---------------------------------------------------------------------------
+# Minimal LSP client over a server's stdio (JSON-RPC, Content-Length framing)
+# ---------------------------------------------------------------------------
+class LSP:
+    def __init__(self, cmd):
+        try:
+            self.proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=0,
+            )
+        except FileNotFoundError:
+            raise SystemExit("lspgraph: language server not found: %s" % cmd[0])
+        self._id = 0
+        self.index_done = False
+        self._index_token = None
+
+    def _frame(self, obj):
+        body = json.dumps(obj).encode()
+        self.proc.stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+        self.proc.stdin.flush()
+
+    def send(self, method, params):
+        self._id += 1
+        self._frame(
+            {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params}
+        )
+        return self._id
+
+    def notify(self, method, params):
+        self._frame({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def _read_msg(self, deadline):
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            if time.time() > deadline:
+                return None
+            r, _, _ = select.select(
+                [self.proc.stdout], [], [], max(0, deadline - time.time())
+            )
+            if not r:
+                return None
+            c = self.proc.stdout.read(1)
+            if not c:
+                return None
+            buf += c
+        header, rest = buf.split(b"\r\n\r\n", 1)
+        n = int(
+            dict(
+                line.split(b": ", 1) for line in header.split(b"\r\n") if b": " in line
+            )[b"Content-Length"]
+        )
+        body = rest
+        while len(body) < n:
+            if time.time() > deadline:
+                return None
+            r, _, _ = select.select(
+                [self.proc.stdout], [], [], max(0, deadline - time.time())
+            )
+            if not r:
+                return None
+            chunk = self.proc.stdout.read(n - len(body))
+            if not chunk:
+                return None
+            body += chunk
+        return json.loads(body)
+
+    def _handle(self, m):
+        """Dispatch a non-response message. Returns True if it was server noise
+        (a server->client request we answered, or a notification)."""
+        if "id" in m and "method" in m:  # server -> client request: answer null
+            res = [None] if m["method"] == "workspace/configuration" else None
+            self._frame({"jsonrpc": "2.0", "id": m["id"], "result": res})
+            return True
+        if m.get("method") == "$/progress":
+            v = m.get("params", {}).get("value", {})
+            tok = m.get("params", {}).get("token")
+            # clangd starts its (one) background-index progress once a file is
+            # opened. Latch the first begin as the index token and complete only
+            # on that token's end, so a stray task can't end the wait early.
+            if v.get("kind") == "begin" and self._index_token is None:
+                self._index_token = tok
+            elif v.get("kind") == "end" and tok == self._index_token:
+                self.index_done = True
+            return True
+        return "method" in m  # other notifications are noise too
+
+    def wait_for(self, rid, timeout=30):
+        deadline = time.time() + timeout
+        while True:
+            m = self._read_msg(deadline)
+            if m is None:
+                return None
+            if m.get("id") == rid and "result" in m:
+                return m["result"]
+            if m.get("id") == rid and "error" in m:
+                return None
+            self._handle(m)
+
+    def request(self, method, params, timeout=30):
+        return self.wait_for(self.send(method, params), timeout)
+
+    def pump(self, seconds, until_index=False):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            m = self._read_msg(deadline)
+            if m is None:
+                break
+            self._handle(m)
+            if until_index and self.index_done:
+                break
+
+    def shutdown(self):
+        try:
+            self.send("shutdown", {})
+            self.notify("exit", {})
+        except Exception:
+            pass
+        self.proc.terminate()
+
+
+# ---------------------------------------------------------------------------
+# Call-graph walk
+# ---------------------------------------------------------------------------
+def _uri(path):
+    return "file://" + os.path.abspath(path)
+
+
+def _path(uri):
+    return uri[len("file://") :] if uri.startswith("file://") else uri
+
+
+def _flatten(symbols, out):
+    for s in symbols or []:
+        out.append(s)
+        _flatten(s.get("children"), out)
+
+
+def build_callgraph(lsp, root, seed_names, seed_files, depth, max_nodes, index_timeout):
+    opened = set()
+
+    def open_file(path):
+        if path in opened or not os.path.exists(path):
+            return
+        opened.add(path)
+        text = open(path, encoding="utf-8", errors="replace").read()
+        lsp.notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": _uri(path),
+                    "languageId": "cpp",
+                    "version": 1,
+                    "text": text,
+                }
+            },
+        )
+
+    # clangd only starts its background index once a file is open. Open the seed
+    # files first (for --seed-only runs, open any project source as a kick) so
+    # indexing begins, THEN wait for it -- call hierarchy needs the index.
+    kick = list(seed_files)
+    if not kick and seed_names:
+        cand = sorted(glob.glob(os.path.join(root, "**", "*.cpp"), recursive=True))
+        if cand:
+            kick = [cand[0]]
+    for p in kick:
+        open_file(p)
+    sys.stderr.write("lspgraph: waiting for background index...\n")
+    lsp.pump(index_timeout, until_index=True)
+    time.sleep(0.5)
+
+    def itemkey(item):
+        s = item["selectionRange"]["start"]
+        return "%s:%d:%d" % (item["uri"], s["line"], s["character"])
+
+    nodes = {}  # itemkey -> node dict
+    edges = {}  # (src_id, tgt_id) -> edge dict
+
+    def node_for(item, seed=False):
+        key = itemkey(item)
+        if key in nodes:
+            if seed and "seed" not in nodes[key]["classes"]:
+                nodes[key]["classes"].append("seed")
+            return nodes[key]
+        rel = os.path.relpath(_path(item["uri"]), root)
+        s = item["selectionRange"]["start"]
+        cls = [KIND_CLASS.get(item.get("kind"), "function")]
+        if seed:
+            cls.append("seed")
+        nid = "sym:%s:%d:%d:%s" % (rel, s["line"], s["character"], item["name"])
+        detail = item.get("detail") or ""
+        node = {
+            "id": nid,
+            "label": item["name"],
+            "full": "%s\n%s\n%s:%d" % (item["name"], detail, rel, s["line"] + 1),
+            "classes": cls,
+        }
+        nodes[key] = node
+        return node
+
+    # Resolve seeds -> CallHierarchyItems.
+    seeds = []
+    for path in seed_files:
+        if not os.path.exists(path):
+            sys.stderr.write("lspgraph: no such file: %s\n" % path)
+            continue
+        open_file(path)
+        syms = []
+        _flatten(
+            lsp.request(
+                "textDocument/documentSymbol", {"textDocument": {"uri": _uri(path)}}
+            ),
+            syms,
+        )
+        for sym in syms:
+            if sym.get("kind") not in KIND_CLASS:
+                continue
+            pos = sym["selectionRange"]["start"]
+            items = lsp.request(
+                "textDocument/prepareCallHierarchy",
+                {"textDocument": {"uri": _uri(path)}, "position": pos},
+            )
+            seeds.extend(items or [])
+    for name in seed_names:
+        for sym in lsp.request("workspace/symbol", {"query": name}) or []:
+            if sym.get("kind") not in KIND_CLASS:
+                continue
+            loc = sym.get("location", {})
+            uri = loc.get("uri")
+            if not uri:
+                continue
+            open_file(_path(uri))
+            items = lsp.request(
+                "textDocument/prepareCallHierarchy",
+                {"textDocument": {"uri": uri}, "position": loc["range"]["start"]},
+            )
+            seeds.extend(items or [])
+
+    if not seeds:
+        raise SystemExit("lspgraph: no seed symbols resolved (check --seed/--file)")
+
+    # BFS up the caller graph via incomingCalls.
+    queue = []
+    visited = set()
+    for it in seeds:
+        node_for(it, seed=True)
+        k = itemkey(it)
+        if k not in visited:
+            visited.add(k)
+            queue.append((it, 0))
+
+    while queue and len(nodes) < max_nodes:
+        item, d = queue.pop(0)
+        if d >= depth:
+            continue
+        open_file(_path(item["uri"]))
+        incoming = lsp.request("callHierarchy/incomingCalls", {"item": item}) or []
+        callee = node_for(item)
+        for call in incoming:
+            frm = call.get("from")
+            if not frm:
+                continue
+            if itemkey(frm) not in nodes and len(nodes) >= max_nodes:
+                continue  # don't add new caller nodes past the cap
+            caller = node_for(frm)
+            edges[(caller["id"], callee["id"])] = {
+                "source": caller["id"],
+                "target": callee["id"],
+                "label": "calls",
+                "classes": ["call"],
+            }
+            k = itemkey(frm)
+            if k not in visited and len(nodes) < max_nodes:
+                visited.add(k)
+                queue.append((frm, d + 1))
+
+    truncated = bool(queue) or len(nodes) >= max_nodes
+    return list(nodes.values()), list(edges.values()), truncated
+
+
+def assemble(nodes, edges, root, seeds_desc, truncated):
+    counts = {"nodes": len(nodes), "edges": len(edges), "by_type": {}, "by_class": {}}
+    for n in nodes:
+        for c in n["classes"]:
+            counts["by_type"][c] = counts["by_type"].get(c, 0) + 1
+    for e in edges:
+        for c in e["classes"]:
+            counts["by_class"][c] = counts["by_class"].get(c, 0) + 1
+    meta = {
+        "title": "calls — " + os.path.basename(os.path.abspath(root)),
+        "subtitle": "seeded from " + seeds_desc,
+        "host": socket.gethostname(),
+        "captured": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "truncated": truncated,
+        "counts": counts,
+    }
+    return {
+        "meta": meta,
+        "node_classes": NODE_CLASSES,
+        "edge_classes": EDGE_CLASSES,
+        "style": STYLE,
+        "edge_key": EDGE_KEY,
+        "traversals": TRAVERSALS,
+        "force_structures": FORCE_STRUCTURES,
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def find_compile_commands(project, override):
+    if override:
+        return override
+    if os.path.exists(os.path.join(project, "compile_commands.json")):
+        return project
+    for d in sorted(glob.glob(os.path.join(project, "build*"))):
+        if os.path.exists(os.path.join(d, "compile_commands.json")):
+            return d
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="lspgraph",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Drive a language server (clangd) and emit a call-graph model JSON for\n"
+            "the socketscope viewer. The graph is built by walking callers\n"
+            "(incomingCalls) up from the seed symbols. Pipe to: socketscope.py"
+        ),
+        epilog=(
+            "examples:\n"
+            "  lspgraph.py proj --file src/foo.cpp | socketscope.py > calls.html\n"
+            "  lspgraph.py proj --seed planPath --depth 4 | socketscope.py\n"
+        ),
+    )
+    ap.add_argument(
+        "project",
+        help="project root (contains, or has a build dir with, compile_commands.json)",
+    )
+    ap.add_argument(
+        "--seed",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="seed symbol name (workspace/symbol); repeatable",
+    )
+    ap.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="seed from every function in PATH; repeatable",
+    )
+    ap.add_argument(
+        "--depth",
+        type=int,
+        default=3,
+        metavar="N",
+        help="caller BFS hops from the seeds (default: 3)",
+    )
+    ap.add_argument(
+        "--max-nodes",
+        type=int,
+        default=400,
+        metavar="N",
+        help="cap total symbols (default: 400)",
+    )
+    ap.add_argument(
+        "--compile-commands",
+        default=None,
+        metavar="DIR",
+        help="dir with compile_commands.json (default: autodetect under the project)",
+    )
+    ap.add_argument(
+        "--server",
+        default="clangd",
+        metavar="CMD",
+        help="language server command (default: clangd)",
+    )
+    ap.add_argument(
+        "--index-timeout",
+        type=int,
+        default=60,
+        metavar="S",
+        help="seconds to wait for the background index (default: 60)",
+    )
+    args = ap.parse_args()
+
+    project = os.path.abspath(args.project)
+    if not os.path.isdir(project):
+        ap.error("not a directory: %s" % args.project)
+    if not args.seed and not args.file:
+        ap.error("give at least one --seed NAME or --file PATH")
+
+    cmd = [args.server]
+    if "clangd" in os.path.basename(args.server):
+        cmd += ["--background-index", "--log=error"]
+        cc = find_compile_commands(project, args.compile_commands)
+        if cc:
+            cmd.append("--compile-commands-dir=" + cc)
+        else:
+            sys.stderr.write(
+                "lspgraph: warning: no compile_commands.json found under %s\n" % project
+            )
+
+    lsp = LSP(cmd)
+    try:
+        ok = lsp.request(
+            "initialize",
+            {
+                "processId": os.getpid(),
+                "rootUri": _uri(project),
+                "capabilities": {
+                    "textDocument": {
+                        "callHierarchy": {"dynamicRegistration": True},
+                        "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
+                    },
+                    "window": {"workDoneProgress": True},
+                },
+            },
+        )
+        if ok is None:
+            raise SystemExit("lspgraph: server failed to initialize")
+        lsp.notify("initialized", {})
+
+        # --file may be given relative to cwd or to the project root.
+        seed_files = [
+            os.path.abspath(p if os.path.exists(p) else os.path.join(project, p))
+            for p in args.file
+        ]
+        nodes, edges, truncated = build_callgraph(
+            lsp,
+            project,
+            args.seed,
+            seed_files,
+            args.depth,
+            args.max_nodes,
+            args.index_timeout,
+        )
+    finally:
+        lsp.shutdown()
+
+    seeds_desc = ", ".join(args.seed + [os.path.basename(p) for p in args.file]) or "?"
+    model = assemble(nodes, edges, project, seeds_desc, truncated)
+    json.dump(model, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    c = model["meta"]["counts"]
+    sys.stderr.write(
+        "lspgraph: %s — %d symbols, %d calls%s\n"
+        % (
+            model["meta"]["title"],
+            c["nodes"],
+            c["edges"],
+            " [truncated]" if truncated else "",
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -113,6 +113,22 @@ natural tools. Source-file nodes start hidden — toggle the **source** node cla
 reveal them; CMake-internal `.rule`/generated stubs are split into a separate, also-hidden
 **generated** class.
 
+**`lspgraph.py`** — drive a language server ([clangd](https://clangd.llvm.org/) by default)
+and emit a **call graph**. It walks the call hierarchy (`callHierarchy/incomingCalls`)
+outward from one or more seed symbols:
+
+```bash
+lspgraph.py proj --file src/foo.cpp | socketscope.py > calls.html   # seed: a file's functions
+lspgraph.py proj --seed planPath --depth 4 | socketscope.py         # seed: a symbol name
+```
+
+Nodes are functions/methods/constructors (seeds get a red border), edges are directed
+caller→callee, so the *Callers* / *Callees* traversals do impact analysis and **Topo BFS**
+lays the call graph out by depth. It's bounded by `--depth` (default 3) and `--max-nodes`.
+The graph is built from **callers** (`incomingCalls`) — the "what breaks if I change this"
+direction — because clangd doesn't implement outgoing call hierarchy. Needs `clangd` on
+PATH and a `compile_commands.json` (autodetected under `<proj>/build*`).
+
 ### Filtering at capture time
 
 `sockets_graph.py --ignore` drops node classes from the data entirely (smaller file, less clutter). You can also just hide/show classes live in the viewer's legend after the fact. Class ids: `proc-root`, `proc-user`, `proc-kernel`, `tcp`, `udp`, `unix`, `unix-unnamed`, `remote`. Run `sockets_graph.py --help` for the convenience flags (`--ignore-uds`, `--ignore-kernel`, …).
