@@ -86,6 +86,9 @@ Check things off as they land.
       `didOpen` — both handled. Verified against `orchard/`.
       Future modes (still open): type-hierarchy + reference graphs; `--direction` once a
       server supports outgoingCalls; whole-project `--all`; other servers via `--server`.
+- [x] **"Show all" / "Hide all" buttons** on each legend (node classes / edge
+      classes) — bulk-set every class in that legend in one click instead of
+      per-row toggling; single `applyVis()`/`reheat()` for the whole batch.
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
       Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it
@@ -112,9 +115,43 @@ Check things off as they land.
 - [ ] **Big-endian** support: `/proc/net` addresses are host byte order, decoded
       assuming little-endian. Detect host endianness (e.g. `sys.byteorder`) and
       handle big-endian (s390x) so IP text is correct there too.
+- [ ] **Multi-host merge**: run `sockets-graph` on several machines and combine
+      the snapshots into one model, with remote TCP endpoints stitched together
+      across hosts (the same conceptual peer, seen from both sides). Leaning
+      toward a separate **stitching script** run post-merge (matching remote
+      IP:port pairs across snapshots) over baking a hostname into node IDs at
+      generation time — deconflicting the id namespace is only one small part
+      of the actual stitching problem, so solve them together rather than
+      pre-committing to an id scheme now.
+- [ ] **`dirtree-graph`: "Siblings" traversal** — a rule connecting nodes that
+      share the same immediate parent directory (independent of the existing
+      containment tree edges), so sibling-hopping doesn't require going back up
+      through the parent.
+- [ ] **`lsp-graph`: types as first-class nodes** — currently only functions/
+      methods/constructors (SymbolKind restricted to the call-hierarchy kinds)
+      are emitted; classes/structs/enums/etc. should appear as their own class
+      of node (distinct from the `seed` modifier border), with edges for
+      containment/usage, not just calls. Ties into clangd's `typeHierarchy/*`
+      requests, separate from `callHierarchy/incomingCalls`.
+- [ ] **`lsp-graph`: whole-project symbol enumeration** — a mode to seed from
+      *every* first-class type/symbol in the project (e.g. `workspace/symbol`
+      with an empty/wildcard query, or walking `textDocument/documentSymbol`
+      across all indexed files) instead of requiring `--file`/`--seed` up
+      front, so you can explore a codebase without already knowing a starting
+      point. Distinct from the types-as-nodes item above — this is about seed
+      *discovery*, not node *kind*.
 
 ## Viewer / UX
 
+- [ ] **Any/All visibility toggle** — a per-legend switch between the current
+      OR semantics (visible if *any* of an element's classes are shown — today's
+      only mode, see `visBy`/`nodeVisible`/`edgeVisible`) and AND semantics
+      (visible only if *all* of its classes are shown). Needs its own toggle per
+      legend (node vs. edge), since an element's class list is checked against
+      one legend's hide-set at a time.
+- [ ] **Choose BFS roots explicitly** — let **pinned** nodes force-seed as roots
+      for Topo BFS (`topoBFS`'s in-degree-order seeding, `render-graph-html.py`
+      `topoBFS()`), instead of always picking real in-degree-0 nodes first.
 - [ ] **Visualization layers** — a first-class JSON concept alongside `style` /
       `traversals` / `force_structures` that activates data→appearance mappings:
       e.g. map a numeric node field to a colormap (`size` → fill, `mtime` → heat),

@@ -280,8 +280,12 @@ class Viewer:
   <div id="chaininfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
   <h2>View</h2>
   <button id="fit">&#x2922; Fit all</button><button id="fitsel">&#x2922; Fit selected</button>
-  <div id="nodelegendsec"><h2>Node classes - click to filter</h2><div id="legend"></div></div>
-  <div id="edgelegendsec"><h2>Edge classes - click to filter</h2><div id="edgelegend"></div></div>
+  <div id="nodelegendsec"><h2>Node classes - click to filter</h2>
+    <button id="nodeshowall">Show all</button><button id="nodehideall">Hide all</button>
+    <div id="legend"></div></div>
+  <div id="edgelegendsec"><h2>Edge classes - click to filter</h2>
+    <button id="edgeshowall">Show all</button><button id="edgehideall">Hide all</button>
+    <div id="edgelegend"></div></div>
   <div id="edgekeysec"><h2>Edge style</h2><div class="key" id="edgekey"></div></div>
   <h2>Export</h2>
   <button id="dljson">&#x2913; Download data (JSON)</button>
@@ -654,8 +658,9 @@ function applyVis(){
 function classesPresent(arr,decl){const present=new Set();let other=false;
   arr.forEach(o=>{const cl=o.classes||[];if(!cl.length)other=true;cl.forEach(c=>{present.add(c);if(!decl.has(c))other=true;});});
   return {present,other};}
-function buildLegend(boxId,secId,catalog,decl,hideSet,info){
+function buildLegend(boxId,secId,catalog,decl,hideSet,info,showAllId,hideAllId){
   const box=document.getElementById(boxId);
+  const ids=[],checks=[];
   const mk=(id,label,color)=>{const r=document.createElement("div");r.className="row";
     const c=document.createElement("input");c.type="checkbox";c.checked=!hideSet.has(id);
     const b=document.createElement("label");b.textContent=label;
@@ -665,13 +670,20 @@ function buildLegend(boxId,secId,catalog,decl,hideSet,info){
     // Colored class -> filled swatch; colorless class (modifier / source-colored)
     // -> no swatch element at all (label sits right after the checkbox).
     if(color){const s=document.createElement("span");s.className="sw";s.style.background=color;r.append(s);}
-    r.append(b);box.append(r);};
+    r.append(b);box.append(r);ids.push(id);checks.push(c);};
   let rows=0;
   catalog.forEach(t=>{if(info.present.has(t.id)){mk(t.id,t.label||t.id,t.color);rows++;}});
   if(info.other){mk(OTHER,"other",null);rows++;}
-  if(!rows){const sec=document.getElementById(secId);if(sec)sec.style.display="none";}}
-buildLegend("legend","nodelegendsec",NODE_CLASSES,NODE_DECL,hideNode,classesPresent(NODES,NODE_DECL));
-buildLegend("edgelegend","edgelegendsec",EDGE_CLASSES,EDGE_DECL,hideEdge,classesPresent(EDGES,EDGE_DECL));
+  if(!rows){const sec=document.getElementById(secId);if(sec)sec.style.display="none";return;}
+  // Show all / Hide all: bulk-set every class in this legend at once instead of
+  // clicking each row; single applyVis()/reheat() for the whole batch.
+  const setAll=hide=>{ids.forEach(id=>hide?hideSet.add(id):hideSet.delete(id));
+    checks.forEach(c=>c.checked=!hide);applyVis();reheat(8*SEP);};
+  const showAll=document.getElementById(showAllId),hideAll=document.getElementById(hideAllId);
+  if(showAll)showAll.onclick=()=>setAll(false);
+  if(hideAll)hideAll.onclick=()=>setAll(true);}
+buildLegend("legend","nodelegendsec",NODE_CLASSES,NODE_DECL,hideNode,classesPresent(NODES,NODE_DECL),"nodeshowall","nodehideall");
+buildLegend("edgelegend","edgelegendsec",EDGE_CLASSES,EDGE_DECL,hideEdge,classesPresent(EDGES,EDGE_DECL),"edgeshowall","edgehideall");
 // apply the default-hidden state up front: remove from view AND the physics so
 // they don't shove the visible nodes around before you ever touch a legend.
 applyVis();
