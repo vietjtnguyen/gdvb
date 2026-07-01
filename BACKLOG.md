@@ -84,8 +84,8 @@ Check things off as they land.
       + Topo BFS. **clangd 14 only implements incomingCalls** (callers / impact direction;
       outgoingCalls returns empty), and clangd starts indexing only after the first
       `didOpen` — both handled. Verified against `orchard/`.
-      Future modes (still open): type-hierarchy + reference graphs; `--direction` once a
-      server supports outgoingCalls; whole-project `--all`; other servers via `--server`.
+      Future modes (still open): reference graphs; `--direction` once a server supports
+      outgoingCalls; whole-project `--all`; other servers via `--server`.
 - [x] **"Show all" / "Hide all" buttons** on each legend (node classes / edge
       classes) — bulk-set every class in that legend in one click instead of
       per-row toggling; single `applyVis()`/`reheat()` for the whole batch.
@@ -157,6 +157,27 @@ Check things off as they land.
       *nearest* mark. Leftover nodes unreachable from any mark (a separate
       component) still get their own arbitrary seed afterward. Verified against
       real data with two marks in the same tree.
+- [x] **`lsp-graph`: types as first-class nodes.** Every method/constructor
+      discovered by the call-graph walk now also pulls in its **owning type**
+      (class/struct/interface/enum) as its own node: a `member-of` edge from
+      the callable to its type, found via `textDocument/documentSymbol`
+      containment (clangd's `CallHierarchyItem` carries no parent-symbol info,
+      so the file is scanned once and cached, mapping each member's position to
+      its enclosing type). Each newly-discovered type then resolves its
+      ancestors/descendants via `textDocument/typeHierarchy` into `inherits`
+      edges (derived→base), bounded by the new `--type-depth` (default 3).
+      *Supertypes* / *Subtypes* / *Members* / *Owner type* traversals mirror
+      the *Callers*/*Callees* pairing. **clangd 14 speaks its pre-3.17 legacy
+      `textDocument/typeHierarchy` extension**, not the standardized
+      `prepareTypeHierarchy`/`typeHierarchy/supertypes`/`subtypes` trio (same
+      generation gap as incomingCalls-only) - one request returns the whole
+      ancestor/descendant chain pre-resolved (nested inline), so no iterative
+      RPCs are needed to walk it. Verified there's no "wide base class"
+      blast-radius risk: a class 20+ subclasses deep off a common base
+      (`ISteppable` in `orchard/`) does NOT pull its siblings into the graph,
+      because clangd's nested resolution only continues in the direction that
+      reached each node (ancestors resolve further ancestors; it doesn't cross
+      over to enumerate a common base's other descendants).
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
       Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it

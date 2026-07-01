@@ -129,6 +129,12 @@ The graph is built from **callers** (`incomingCalls`) — the "what breaks if I 
 direction — because clangd doesn't implement outgoing call hierarchy. Needs `clangd` on
 PATH and a `compile_commands.json` (autodetected under `<proj>/build*`).
 
+Every method/constructor also pulls in its **owning type** (class/struct/interface/enum)
+as its own node — a `member-of` edge to the type it belongs to (`textDocument/documentSymbol`
+containment), plus the type's ancestors/descendants (`textDocument/typeHierarchy`) as
+`inherits` edges, bounded by `--type-depth` (default 3). *Supertypes* / *Subtypes* /
+*Members* / *Owner type* traversals navigate this the same way *Callers*/*Callees* do calls.
+
 ### Filtering at capture time
 
 `sockets-graph --ignore` drops node classes from the data entirely (smaller file, less clutter). You can also just hide/show classes live in the viewer's legend after the fact. Class ids: `proc-root`, `proc-user`, `proc-kernel`, `tcp`, `udp`, `unix`, `unix-unnamed`, `remote`. Run `sockets-graph --help` for the convenience flags (`--ignore-uds`, `--ignore-kernel`, …).

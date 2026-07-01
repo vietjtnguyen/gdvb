@@ -15,6 +15,14 @@ the call graph from the seeds - the impact-analysis direction ("what breaks if I
 change this"). Edges are directed caller->callee, so the viewer navigates either
 way. (clangd 14 doesn't implement outgoingCalls; callers are what's available.)
 
+Every method/constructor discovered also pulls in its OWNING TYPE (class/struct/
+interface/enum) as a first-class node, via `textDocument/documentSymbol`
+containment - a `member-of` edge from the callable to its type. Each type then
+resolves its ancestors/descendants via `textDocument/typeHierarchy` (clangd's
+pre-3.17 extension - clangd 14 doesn't speak the standardized
+prepareTypeHierarchy/supertypes/subtypes trio) into `inherits` edges
+(derived->base), bounded by `--type-depth` hops.
+
 Requires the language server on PATH (clangd >= the call-hierarchy versions) and,
 for clangd, a compile_commands.json. Stdlib only.
 """
@@ -29,13 +37,23 @@ import argparse
 import datetime
 import subprocess
 
-# LSP SymbolKind -> our node class (we only keep callables).
+# LSP SymbolKind -> our node class, for the callables the call-hierarchy walk seeds
+# from and returns.
 KIND_CLASS = {6: "method", 9: "constructor", 12: "function"}
+
+# LSP SymbolKind -> our node class, for the *containers* a callable belongs to
+# (class/struct/interface/enum). These aren't call-hierarchy seeds; they're
+# discovered incidentally via documentSymbol containment and typeHierarchy.
+TYPE_KIND_CLASS = {5: "class", 23: "struct", 11: "interface", 10: "enum"}
 
 NODE_CLASSES = [
     {"id": "function", "label": "Function", "color": "#3F8EE0"},
     {"id": "method", "label": "Method", "color": "#2FA86E"},
     {"id": "constructor", "label": "Constructor", "color": "#C9A227"},
+    {"id": "class", "label": "Class", "color": "#8E44AD"},
+    {"id": "struct", "label": "Struct", "color": "#16A085"},
+    {"id": "interface", "label": "Interface", "color": "#D35400"},
+    {"id": "enum", "label": "Enum", "color": "#5D6D7E"},
     # `seed` is a modifier class on the symbols the walk started from: no color
     # (so it doesn't override the kind fill), just a border from STYLE.
     {"id": "seed", "label": "Seed symbol"},
@@ -43,12 +61,28 @@ NODE_CLASSES = [
 
 EDGE_CLASSES = [
     {"id": "call", "label": "calls", "color": "#5566AA"},
+    {"id": "member-of", "label": "member of", "color": "#999999"},
+    {"id": "inherits", "label": "inherits", "color": "#C2185B"},
 ]
 
 STYLE = [
     {
         "selector": "edge.call",
         "style": {"width": 2, "line-color": "#5566AA", "target-arrow-color": "#5566AA"},
+    },
+    {
+        "selector": "edge.member-of",
+        "style": {
+            "width": 1,
+            "line-style": "dashed",
+            "line-color": "#999999",
+            "target-arrow-color": "#999999",
+            "target-arrow-shape": "none",
+        },
+    },
+    {
+        "selector": "edge.inherits",
+        "style": {"width": 2, "line-color": "#C2185B", "target-arrow-color": "#C2185B"},
     },
     {
         "selector": "node.seed",
@@ -58,11 +92,15 @@ STYLE = [
 
 EDGE_KEY = [
     "→ arrowhead = caller → callee",
+    "dashed gray, no arrowhead = member of (method ⊂ its type)",
+    "pink arrowhead = inherits (derived → base)",
     "red border = seed symbol",
 ]
 
 # Edges are caller->callee. "Callers" floods upstream (in), "Callees" downstream
-# (out) within the captured subgraph.
+# (out) within the captured subgraph. Type edges: member-of is member->owner,
+# inherits is derived->base, so "out" from a type walk climbs toward ancestors/
+# owners and "in" walks toward descendants/members - mirroring the call pairing.
 TRAVERSALS = [
     {
         "id": "callers",
@@ -76,10 +114,35 @@ TRAVERSALS = [
         "mode": "flood",
         "rules": [{"edge": "edge.call", "dir": "out"}],
     },
+    {
+        "id": "supertypes",
+        "label": "⬆ Supertypes",
+        "mode": "flood",
+        "rules": [{"edge": "edge.inherits", "dir": "out"}],
+    },
+    {
+        "id": "subtypes",
+        "label": "⬇ Subtypes",
+        "mode": "flood",
+        "rules": [{"edge": "edge.inherits", "dir": "in"}],
+    },
+    {
+        "id": "members",
+        "label": "▸ Members",
+        "mode": "flood",
+        "rules": [{"edge": "edge.member-of", "dir": "in"}],
+    },
+    {
+        "id": "owner-type",
+        "label": "▴ Owner type",
+        "mode": "step",
+        "rules": [{"edge": "edge.member-of", "dir": "out"}],
+    },
 ]
 
 FORCE_STRUCTURES = [
     {"id": "calls", "label": "call graph", "emphasize": "edge.call"},
+    {"id": "types", "label": "type hierarchy", "emphasize": "edge.inherits"},
 ]
 
 
@@ -223,7 +286,15 @@ def _flatten(symbols, out):
         _flatten(s.get("children"), out)
 
 
-def build_callgraph(lsp, root, seed_names, seed_files, depth, max_nodes, index_timeout):
+def _flatten_with_parent(symbols, parent, out):
+    for s in symbols or []:
+        out.append((s, parent))
+        _flatten_with_parent(s.get("children"), s, out)
+
+
+def build_callgraph(
+    lsp, root, seed_names, seed_files, depth, max_nodes, index_timeout, type_depth
+):
     opened = set()
 
     def open_file(path):
@@ -261,8 +332,132 @@ def build_callgraph(lsp, root, seed_names, seed_files, depth, max_nodes, index_t
         s = item["selectionRange"]["start"]
         return "%s:%d:%d" % (item["uri"], s["line"], s["character"])
 
-    nodes = {}  # itemkey -> node dict
+    nodes = {}  # itemkey (or "type:"+key) -> node dict, shared namespace
     edges = {}  # (src_id, tgt_id) -> edge dict
+
+    # ---- type containment (documentSymbol) + inheritance (typeHierarchy) ----
+    scanned_files = set()
+    container_map = {}  # member itemkey -> (parent symbol dict, uri)
+
+    def scan_file(path):
+        """Cache the file's containment structure: for every method/ctor/function
+        nested under a class/struct/interface/enum, remember its owner. clangd's
+        CallHierarchyItem carries no parent-symbol info, so this is the only way
+        to recover "what type does this callable belong to"."""
+        if path in scanned_files or not os.path.exists(path):
+            return
+        scanned_files.add(path)
+        open_file(path)
+        uri = _uri(path)
+        pairs = []
+        _flatten_with_parent(
+            lsp.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}}),
+            None,
+            pairs,
+        )
+        for sym, parent in pairs:
+            if (
+                parent is not None
+                and sym.get("kind") in KIND_CLASS
+                and parent.get("kind") in TYPE_KIND_CLASS
+            ):
+                s = sym["selectionRange"]["start"]
+                key = "%s:%d:%d" % (uri, s["line"], s["character"])
+                container_map[key] = (parent, uri)
+
+    def type_node_for(sym, uri):
+        s = sym["selectionRange"]["start"]
+        key = "type:%s:%d:%d" % (uri, s["line"], s["character"])
+        if key in nodes:
+            return nodes[key]
+        rel = os.path.relpath(_path(uri), root)
+        cls = [TYPE_KIND_CLASS.get(sym.get("kind"), "class")]
+        tid = "type:%s:%d:%d:%s" % (rel, s["line"], s["character"], sym["name"])
+        node = {
+            "id": tid,
+            "label": sym["name"],
+            "full": "%s\n%s:%d" % (sym["name"], rel, s["line"] + 1),
+            "classes": cls,
+        }
+        nodes[key] = node
+        if len(nodes) < max_nodes:
+            expand_type_hierarchy(node, sym, uri)
+        return node
+
+    def expand_type_hierarchy(node, sym, uri):
+        # clangd 14 speaks its pre-standardization extension (a single request
+        # returns the whole parents/children chain, pre-resolved to `resolve`
+        # levels deep) rather than LSP 3.17's prepareTypeHierarchy/supertypes/
+        # subtypes trio - same generation gap as callHierarchy/incomingCalls-only.
+        result = lsp.request(
+            "textDocument/typeHierarchy",
+            {
+                "textDocument": {"uri": uri},
+                "position": sym["selectionRange"]["start"],
+                "direction": 2,  # Both (0=Children, 1=Parents, 2=Both)
+                "resolve": type_depth,
+            },
+        )
+        if not result:
+            return
+        _walk_type_edges(result.get("parents"), node, True)
+        _walk_type_edges(result.get("children"), node, False)
+
+    def _walk_type_edges(items, from_node, is_super):
+        # `items` is already recursively resolved by clangd (nested parents/
+        # children inline), so this just flattens it - no further RPCs.
+        for it in items or []:
+            if len(nodes) >= max_nodes:
+                return
+            it_uri = it.get("uri")
+            s = it["selectionRange"]["start"]
+            key = "type:%s:%d:%d" % (it_uri, s["line"], s["character"])
+            tnode = nodes.get(key)
+            if tnode is None:
+                rel = os.path.relpath(_path(it_uri), root)
+                cls = [TYPE_KIND_CLASS.get(it.get("kind"), "class")]
+                tid = "type:%s:%d:%d:%s" % (rel, s["line"], s["character"], it["name"])
+                tnode = {
+                    "id": tid,
+                    "label": it["name"],
+                    "full": "%s\n%s:%d" % (it["name"], rel, s["line"] + 1),
+                    "classes": cls,
+                }
+                nodes[key] = tnode
+            src, tgt = (
+                (from_node["id"], tnode["id"])
+                if is_super
+                else (tnode["id"], from_node["id"])
+            )
+            edges.setdefault(
+                (src, tgt),
+                {
+                    "source": src,
+                    "target": tgt,
+                    "label": "inherits",
+                    "classes": ["inherits"],
+                },
+            )
+            _walk_type_edges(it.get("parents"), tnode, True)
+            _walk_type_edges(it.get("children"), tnode, False)
+
+    def link_container(item, member_node):
+        path = _path(item["uri"])
+        scan_file(path)
+        entry = container_map.get(itemkey(item))
+        if not entry:
+            return
+        parent_sym, uri = entry
+        tnode = type_node_for(parent_sym, uri)
+        edges.setdefault(
+            (member_node["id"], tnode["id"]),
+            {
+                "source": member_node["id"],
+                "target": tnode["id"],
+                "label": "member of",
+                "classes": ["member-of"],
+            },
+        )
 
     def node_for(item, seed=False):
         key = itemkey(item)
@@ -284,6 +479,7 @@ def build_callgraph(lsp, root, seed_names, seed_files, depth, max_nodes, index_t
             "classes": cls,
         }
         nodes[key] = node
+        link_container(item, node)
         return node
 
     # Resolve seeds -> CallHierarchyItems.
@@ -454,6 +650,13 @@ def main():
         help="cap total symbols (default: 400)",
     )
     ap.add_argument(
+        "--type-depth",
+        type=int,
+        default=3,
+        metavar="N",
+        help="ancestor/descendant hops to resolve per type via typeHierarchy (default: 3)",
+    )
+    ap.add_argument(
         "--compile-commands",
         default=None,
         metavar="DIR",
@@ -525,6 +728,7 @@ def main():
             args.depth,
             args.max_nodes,
             args.index_timeout,
+            args.type_depth,
         )
     finally:
         lsp.shutdown()
@@ -535,7 +739,7 @@ def main():
     sys.stdout.write("\n")
     c = model["meta"]["counts"]
     sys.stderr.write(
-        "lsp-graph: %s — %d symbols, %d calls%s\n"
+        "lsp-graph: %s — %d nodes, %d edges%s\n"
         % (
             model["meta"]["title"],
             c["nodes"],
