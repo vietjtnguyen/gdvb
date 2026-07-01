@@ -104,19 +104,33 @@ Check things off as they land.
       traversal-selectable while hidden, since only node visibility gates the
       walk. Synthesized once in `_finalize` from the existing containment
       edges, shared by both the walk and stdin path-list builders.
-- [x] **Choose BFS roots explicitly via a "Mark" state** — a new `marked` Set,
-      separate from `pinned`, flags selected nodes as layout anchors; Topo BFS
-      seeds marked nodes first (forced roots) regardless of in-degree, falling
-      back to the existing in-degree ordering for the rest (unchanged when
-      nothing is marked). Deliberately not reusing `pinned`: that's a physics-sim
-      concern (freeze position) orthogonal to "seed this layout from here", and
-      conflating them would mean a pin set for an unrelated reason silently
-      changes root choice next time Topo BFS runs. Named generically ("Mark",
-      not "Root") since future static layouts may have no notion of roots at
-      all, in which case marks are simply inert for them. Visually composes with
-      Pin instead of clobbering it: `pinned` owns `border-*` (dashed amber),
-      `marked` owns `underlay-*` (purple halo) - disjoint Cytoscape style
-      properties, so a node that's both shows both at once.
+- [x] **"Mark" state + "Undirected BFS" static layout for choosing BFS roots** —
+      a new `marked` Set, separate from `pinned`, flags selected nodes as layout
+      anchors. Deliberately not reusing `pinned`: that's a physics-sim concern
+      (freeze position) orthogonal to "seed a layout from here", and conflating
+      them would mean a pin set for an unrelated reason silently changes root
+      choice later. Named generically ("Mark", not "Root") since not every
+      static layout has a notion of roots. Visually composes with Pin instead
+      of clobbering it: `pinned` owns `border-*` (dashed amber), `marked` owns
+      `underlay-*` (purple halo) - disjoint Cytoscape style properties, so a
+      node that's both shows both at once.
+      First attempt forced marked nodes to be *additional* roots inside the
+      existing directed **Topo BFS** - wrong: containment edges only run
+      parent→child, so forward-only BFS from a non-root mark can never reach
+      its own ancestors, which then get swept up as a *second*, competing
+      layer-0 root, producing edges that visually point backward into the
+      "layer 0" mark. Fix: Topo BFS stays purely directed/in-degree-based,
+      untouched by marks (it's "roots from edge direction", full stop); marks
+      instead drive a new **Undirected BFS** static layout that walks `ADJ`
+      (the bidirectional adjacency already built for the topology Select
+      tools) instead of directed edges, always seeded from the marked node(s)
+      — an undirected walk has no in-degree to fall back on, so the button is
+      `disabled` (with a tooltip) until at least one node is marked. The shared
+      column/centroid/freeze layout code was factored into `layoutLayers(S,
+      layer, label)`, used by both. Verified against real data: marking a
+      deep, non-root file now puts its parent exactly 1 undirected hop away and
+      the real root at a small positive distance, instead of both mark and
+      root fighting over layer 0.
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
       Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it

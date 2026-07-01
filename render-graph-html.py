@@ -241,6 +241,7 @@ class Viewer:
  button{font:inherit;padding:5px 9px;margin:2px 4px 2px 0;border:1px solid #ccc;border-radius:6px;background:#f4f4f8;cursor:pointer}
  button:hover{background:#ececf2}
  button.on{background:#dfe7ff;border-color:#9db8f0;color:#13316b}
+ button:disabled{opacity:.4;cursor:not-allowed}
  #tip{position:absolute;display:none;max-width:360px;background:#222;color:#fff;font-size:12px;line-height:1.4;
       padding:7px 9px;border-radius:6px;white-space:pre-wrap;pointer-events:none;z-index:9}
  #status{font-size:11.5px;color:#555;margin:4px 0}
@@ -267,7 +268,9 @@ class Viewer:
   <div class="row"><input type="checkbox" id="elabels" checked><label for="elabels">show edge labels</label></div>
   <h2>Static layout</h2>
   <button id="topobfs">&#x2192; Topo BFS</button>
-  <div class="key">left&rarr;right BFS layers from the directed roots of the selection (all visible if none); marked nodes are forced roots when present. Freezes motion; drag nodes or Resume to edit.</div>
+  <div class="key">left&rarr;right BFS layers from the directed roots of the selection (all visible if none). Freezes motion; drag nodes or Resume to edit.</div>
+  <button id="undirbfs">&#x21C6; Undirected BFS</button>
+  <div class="key">same layered layout, but ignores edge direction - an undirected walk has no in-degree to pick a root from, so it's seeded from marked node(s) instead. Mark at least one node first (disabled until then).</div>
   <h2>Select</h2>
   <button id="sel-all">All</button><button id="sel-none">None</button><button id="sel-invert">Invert</button>
   <button id="sel-grow">Grow</button><button id="sel-shrink">Shrink</button><button id="sel-walk">Walk</button><button id="sel-comp">Component</button>
@@ -574,7 +577,8 @@ function doMark(){const sel=cy.$("node:selected");
   const anyUnmarked=sel.some(n=>!marked.has(n.id()));
   cy.batch(()=>sel.forEach(n=>{const id=n.id();
     if(anyUnmarked){marked.add(id);n.addClass("marked");}else{marked.delete(id);n.removeClass("marked");}}));
-  chaininfo.textContent=(anyUnmarked?"marked ":"unmarked ")+sel.length+" node"+(sel.length>1?"s":"")+" · "+marked.size+" marked total";}
+  chaininfo.textContent=(anyUnmarked?"marked ":"unmarked ")+sel.length+" node"+(sel.length>1?"s":"")+" · "+marked.size+" marked total";
+  updateUndirBtn();}
 document.getElementById("marksel").onclick=doMark;
 // Search matches nodes across all their text (label + tooltip + type). Plain
 // query = space-separated terms, ALL must appear (case-insensitive substring);
@@ -601,11 +605,34 @@ pauseBtn.onclick=()=>{paused=!paused;
   if(paused){running=false;pauseBtn.classList.add("on");pauseBtn.textContent="▶ Resume motion";if(status)status.textContent="⏸ paused";}
   else{pauseBtn.classList.remove("on");pauseBtn.textContent="⏸ Pause motion";if(!running){running=true;requestAnimationFrame(tick);}}};
 document.getElementById("jiggle").onclick=()=>reheat(JIGGLE);
+// Shared by both layered static layouts below: given the node set S and a
+// computed BFS layer per id, lay out columns left->right (size gaps to the
+// biggest node), translate so the centroid lands at the CURRENT viewport
+// center (the camera never moves - no fit, no jump; anchoring to the model
+// centroid instead would land at ~origin when scattered or panned away), then
+// freeze motion (a static layout must stop the sim, reflected in the pause
+// toggle).
+function layoutLayers(S,layer,label){
+  let maxW=40,maxH=22;S.forEach(id=>{const s=sz[id];if(s){if(s.w>maxW)maxW=s.w;if(s.h>maxH)maxH=s.h;}});
+  const XG=maxW+90,YG=maxH+22,byL={};
+  S.forEach(id=>{const L=layer[id]||0;(byL[L]=byL[L]||[]).push(id);});
+  const np={};Object.keys(byL).forEach(L=>{const arr=byL[L];
+    arr.forEach((id,i)=>np[id]={x:L*XG,y:(i-(arr.length-1)/2)*YG});});
+  const ext=cy.extent(),tcx=(ext.x1+ext.x2)/2,tcy=(ext.y1+ext.y2)/2;
+  let cx1=0,cy1=0;S.forEach(id=>{cx1+=np[id].x;cy1+=np[id].y;});
+  const cnt=S.length,dx=tcx-cx1/cnt,dy=tcy-cy1/cnt;
+  cy.batch(()=>S.forEach(id=>{cy.getElementById(id).position({x:np[id].x+dx,y:np[id].y+dy});
+    if(vel[id])vel[id]={vx:0,vy:0};}));
+  paused=true;running=false;pauseBtn.classList.add("on");pauseBtn.textContent="▶ Resume motion";
+  if(status)status.textContent="⏸ static · "+label;
+  framed=true;}
 // Static "Topo BFS" layout: lay the selection (or all visible nodes) out left->
 // right in BFS layers from the directed roots (in-degree 0 within the selection).
 // Not a strict DAG: cycles/disconnected pieces are handled by seeding remaining
-// nodes lowest-in-degree-first, so every node lands in some layer. Applying it
-// freezes motion (else the force sim would immediately undo it).
+// nodes lowest-in-degree-first, so every node lands in some layer. Marks (see
+// `marked`) deliberately have no say here - this is the DIRECTED layout, whose
+// roots come from edge direction; the undirected/marked-anchor case below is a
+// genuinely different algorithm, not a tweak to this one.
 function topoBFS(){
   const sel=curSel();
   const S=sel.length?sel:NODES.filter(n=>nodeVisible(n.id)).map(n=>n.id);
@@ -615,36 +642,39 @@ function topoBFS(){
   S.forEach(id=>(INC[id]||[]).forEach(x=>{
     if(x.s===id&&x.t!==id&&inS.has(x.t))out[id].push(x.t);
     if(x.t===id&&x.s!==id&&inS.has(x.s))indeg[id]++;}));
-  // Seed order: marked nodes first (forced roots, regardless of in-degree - see
-  // the `marked` anchor hint), then real roots (in-degree 0), then lowest-in-degree
-  // pseudo-roots for cyclic/unreachable components. Each unvisited seed BFSes its
-  // reach. With no marks this is unchanged from before.
+  // Seed in-degree order: real roots (0) first, then lowest-in-degree pseudo-roots
+  // for cyclic / unreachable components. Each unvisited seed BFSes its reach.
   const layer={},q=[];
-  S.slice().sort((a,b)=>(marked.has(a)?0:1)-(marked.has(b)?0:1)||indeg[a]-indeg[b]).forEach(r=>{if(layer[r]!==undefined)return;
+  S.slice().sort((a,b)=>indeg[a]-indeg[b]).forEach(r=>{if(layer[r]!==undefined)return;
     layer[r]=0;q.push(r);
     while(q.length){const u=q.shift();
       out[u].forEach(w=>{if(layer[w]===undefined){layer[w]=layer[u]+1;q.push(w);}});}});
-  // Columns by layer; size gaps to the biggest node so nothing overlaps.
-  let maxW=40,maxH=22;S.forEach(id=>{const s=sz[id];if(s){if(s.w>maxW)maxW=s.w;if(s.h>maxH)maxH=s.h;}});
-  const XG=maxW+90,YG=maxH+22,byL={};
-  S.forEach(id=>{const L=layer[id]||0;(byL[L]=byL[L]||[]).push(id);});
-  // Target positions (relative to origin), then translate the whole layout so its
-  // centroid lands at the CURRENT viewport center - the result always appears
-  // centered in whatever you're looking at, and the camera never moves (no fit,
-  // no jump). Anchoring to the selection's model centroid instead would land at
-  // ~origin when the selection is scattered or you've panned away.
-  const np={};Object.keys(byL).forEach(L=>{const arr=byL[L];
-    arr.forEach((id,i)=>np[id]={x:L*XG,y:(i-(arr.length-1)/2)*YG});});
-  const ext=cy.extent(),tcx=(ext.x1+ext.x2)/2,tcy=(ext.y1+ext.y2)/2;
-  let cx1=0,cy1=0;S.forEach(id=>{cx1+=np[id].x;cy1+=np[id].y;});
-  const cnt=S.length,dx=tcx-cx1/cnt,dy=tcy-cy1/cnt;
-  cy.batch(()=>S.forEach(id=>{cy.getElementById(id).position({x:np[id].x+dx,y:np[id].y+dy});
-    if(vel[id])vel[id]={vx:0,vy:0};}));
-  // Freeze: a static layout must stop the sim, reflected in the pause toggle.
-  paused=true;running=false;pauseBtn.classList.add("on");pauseBtn.textContent="▶ Resume motion";
-  if(status)status.textContent="⏸ static · topo BFS";
-  framed=true;}
+  layoutLayers(S,layer,"topo BFS");}
 document.getElementById("topobfs").onclick=topoBFS;
+// Static "Undirected BFS" layout: same layered layout, but walks ADJ (the
+// bidirectional adjacency already built for the topology Select tools) instead
+// of directed edges. An undirected walk has no in-degree to pick a root from,
+// so it's ALWAYS seeded from the marked nodes - there's no sensible fallback,
+// hence the button stays disabled until at least one node is marked (see
+// updateUndirBtn). Any part of the selection unreachable from a mark (a
+// separate component) still gets its own arbitrary seed, same as Topo BFS's
+// disconnected-component handling, so nothing is left unplaced.
+function undirectedBFS(){
+  if(!marked.size)return;
+  const sel=curSel();
+  const S=sel.length?sel:NODES.filter(n=>nodeVisible(n.id)).map(n=>n.id);
+  if(!S.length||!S.some(id=>marked.has(id)))return;
+  const inS=new Set(S);
+  const layer={},q=[];
+  S.slice().sort((a,b)=>(marked.has(a)?0:1)-(marked.has(b)?0:1)).forEach(r=>{if(layer[r]!==undefined)return;
+    layer[r]=0;q.push(r);
+    while(q.length){const u=q.shift();
+      (ADJ[u]||[]).forEach(w=>{if(inS.has(w)&&layer[w]===undefined){layer[w]=layer[u]+1;q.push(w);}});}});
+  layoutLayers(S,layer,"undirected BFS");}
+document.getElementById("undirbfs").onclick=undirectedBFS;
+function updateUndirBtn(){const b=document.getElementById("undirbfs");
+  b.disabled=!marked.size;b.title=marked.size?"":"requires at least one marked node";}
+updateUndirBtn();
 document.getElementById("fit").onclick=()=>{framed=true;cy.fit(undefined,30);};
 document.getElementById("fitsel").onclick=()=>{const s=cy.$("node:selected");framed=true;cy.fit(s.nonempty()?s:undefined,60);};
 const fsel=document.getElementById("fstruct"),str=document.getElementById("strength");
