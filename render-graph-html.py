@@ -259,18 +259,6 @@ class Viewer:
     placeholder="label, text, id&hellip;  or /regex/i"
     style="width:100%;box-sizing:border-box;padding:5px 7px;border:1px solid #ccc;border-radius:6px;font:inherit">
   <div id="searchinfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
-  <h2>Force layout (live)</h2>
-  <button id="pause">&#x23F8; Pause motion</button><button id="jiggle">&#x1F300; Jiggle / reset</button>
-  <div class="row"><label for="fstruct">Force&nbsp;structure&nbsp;</label><select id="fstruct"></select></div>
-  <div style="margin:6px 0 2px"><div style="display:flex;justify-content:space-between;font-size:11px;color:#777"><span>weak</span><span>strong</span></div>
-    <input type="range" id="strength" min="0" max="100" value="45" style="width:100%"></div>
-  <div id="status">&#9679; settling&hellip;</div>
-  <div class="row"><input type="checkbox" id="elabels" checked><label for="elabels">show edge labels</label></div>
-  <h2>Static layout</h2>
-  <button id="topobfs">&#x2192; Topo BFS</button>
-  <div class="key">left&rarr;right BFS layers from the directed roots of the selection (all visible if none). Freezes motion; drag nodes or Resume to edit.</div>
-  <button id="undirbfs">&#x21C6; Undirected BFS</button>
-  <div class="key">same layered layout, but ignores edge direction - an undirected walk has no in-degree to pick a root from, so it's seeded from marked node(s) instead. Mark at least one node first (disabled until then).</div>
   <h2>Select</h2>
   <button id="sel-all">All</button><button id="sel-none">None</button><button id="sel-invert">Invert</button>
   <button id="sel-grow">Grow</button><button id="sel-shrink">Shrink</button><button id="sel-walk">Walk</button><button id="sel-comp">Component</button>
@@ -278,7 +266,7 @@ class Viewer:
   <div class="key">tap = select &middot; shift-tap / shift-drag = multi-select<br>
     Grow/Shrink = expand/erode &middot; Walk = step outward &middot; Component = whole connected group<br>
     Pin freezes selected nodes in place (dashed amber border)<br>
-    Mark flags them as layout anchors (purple halo) - e.g. forced Topo BFS roots; layouts that don't use anchors ignore marks</div>
+    Mark flags them as layout anchors (purple halo) - Undirected BFS (below) treats marks as forced roots; layouts that don't use anchors ignore marks</div>
   <div id="traversesec"><h2>Traverse</h2><div id="traverse"></div>
     <div class="key">rule-based selection growth defined in the data</div></div>
   <div id="chaininfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
@@ -295,6 +283,18 @@ class Viewer:
     <div class="key">Any = visible if any of its classes are shown &middot; All = visible only if every one of its classes is shown</div>
     <div id="edgelegend"></div></div>
   <div id="edgekeysec"><h2>Edge style</h2><div class="key" id="edgekey"></div></div>
+  <h2>Force layout (live)</h2>
+  <button id="pause">&#x23F8; Pause motion</button><button id="jiggle">&#x1F300; Jiggle / reset</button>
+  <div class="row"><label for="fstruct">Force&nbsp;structure&nbsp;</label><select id="fstruct"></select></div>
+  <div style="margin:6px 0 2px"><div style="display:flex;justify-content:space-between;font-size:11px;color:#777"><span>weak</span><span>strong</span></div>
+    <input type="range" id="strength" min="0" max="100" value="45" style="width:100%"></div>
+  <div id="status">&#9679; settling&hellip;</div>
+  <div class="row"><input type="checkbox" id="elabels" checked><label for="elabels">show edge labels</label></div>
+  <h2>Static layout</h2>
+  <button id="topobfs">&#x2192; Topo BFS</button>
+  <div class="key">left&rarr;right BFS layers from the directed roots of the selection (all visible if none). Freezes motion; drag nodes or Resume to edit.</div>
+  <button id="undirbfs">&#x21C6; Undirected BFS</button>
+  <div class="key">same layered layout, but ignores edge direction - an undirected walk has no in-degree to pick a root from, so it's seeded from marked node(s) instead. Mark at least one node first (disabled until then).</div>
   <h2>Export</h2>
   <button id="dljson">&#x2913; Download data (JSON)</button>
   <div class="key">the captured graph model (nodes, edges, meta)</div>
