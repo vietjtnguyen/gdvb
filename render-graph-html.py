@@ -282,9 +282,13 @@ class Viewer:
   <button id="fit">&#x2922; Fit all</button><button id="fitsel">&#x2922; Fit selected</button>
   <div id="nodelegendsec"><h2>Node classes - click to filter</h2>
     <button id="nodeshowall">Show all</button><button id="nodehideall">Hide all</button>
+    <button id="nodeanyall">Match: Any</button>
+    <div class="key">Any = visible if any of its classes are shown &middot; All = visible only if every one of its classes is shown</div>
     <div id="legend"></div></div>
   <div id="edgelegendsec"><h2>Edge classes - click to filter</h2>
     <button id="edgeshowall">Show all</button><button id="edgehideall">Hide all</button>
+    <button id="edgeanyall">Match: Any</button>
+    <div class="key">Any = visible if any of its classes are shown &middot; All = visible only if every one of its classes is shown</div>
     <div id="edgelegend"></div></div>
   <div id="edgekeysec"><h2>Edge style</h2><div class="key" id="edgekey"></div></div>
   <h2>Export</h2>
@@ -377,16 +381,21 @@ EDGES.forEach(e=>{if(ADJ[e.source]&&ADJ[e.target]){ADJ[e.source].push(e.target);
 // built above). ADJ (bidirectional, built just above) is reused by the topology tools.
 const NCLS={};NODES.forEach(n=>NCLS[n.id]=n.classes||[]);
 const ECLS={};EDGES.forEach((e,i)=>ECLS["e"+i]=e.classes||[]);
-// Visibility is OR over an element's classes: hidden only when ALL its classes are
-// toggled off. Classes absent from the catalog (or an element with none) fall into
-// the synthesized "other" bucket. hideNode/hideEdge seed from each catalog's `hidden`.
+// Visibility mode is per-legend, toggled via "Match: Any/All" (nodeMatchAll/
+// edgeMatchAll): Any (default) is OR over an element's classes - hidden only
+// when ALL its classes are toggled off; All is AND - hidden if ANY of its
+// classes is toggled off. Classes absent from the catalog (or an element with
+// none) fall into the synthesized "other" bucket. hideNode/hideEdge seed from
+// each catalog's `hidden`.
 const OTHER="__other__";
 const NODE_DECL=new Set(NODE_CLASSES.map(c=>c.id)), EDGE_DECL=new Set(EDGE_CLASSES.map(c=>c.id));
 const hideNode=new Set(NODE_CLASSES.filter(c=>c.hidden).map(c=>c.id));
 const hideEdge=new Set(EDGE_CLASSES.filter(c=>c.hidden).map(c=>c.id));
-const visBy=(cl,decl,hide)=>(!cl||!cl.length)?!hide.has(OTHER):cl.some(c=>!hide.has(decl.has(c)?c:OTHER));
-const nodeVisible=id=>visBy(NCLS[id],NODE_DECL,hideNode);
-const edgeVisible=eid=>visBy(ECLS[eid],EDGE_DECL,hideEdge);
+let nodeMatchAll=false,edgeMatchAll=false;
+const visBy=(cl,decl,hide,all)=>{if(!cl||!cl.length)return !hide.has(OTHER);
+  const shown=c=>!hide.has(decl.has(c)?c:OTHER);return all?cl.every(shown):cl.some(shown);};
+const nodeVisible=id=>visBy(NCLS[id],NODE_DECL,hideNode,nodeMatchAll);
+const edgeVisible=eid=>visBy(ECLS[eid],EDGE_DECL,hideEdge,edgeMatchAll);
 const INC={};NODES.forEach(n=>INC[n.id]=[]);
 EDGES.forEach((e,i)=>{const id="e"+i;
   if(INC[e.source])INC[e.source].push({e:id,s:e.source,t:e.target});
@@ -658,7 +667,7 @@ function applyVis(){
 function classesPresent(arr,decl){const present=new Set();let other=false;
   arr.forEach(o=>{const cl=o.classes||[];if(!cl.length)other=true;cl.forEach(c=>{present.add(c);if(!decl.has(c))other=true;});});
   return {present,other};}
-function buildLegend(boxId,secId,catalog,decl,hideSet,info,showAllId,hideAllId){
+function buildLegend(boxId,secId,catalog,decl,hideSet,info,showAllId,hideAllId,anyAllId,setMatchAll){
   const box=document.getElementById(boxId);
   const ids=[],checks=[];
   const mk=(id,label,color)=>{const r=document.createElement("div");r.className="row";
@@ -681,9 +690,17 @@ function buildLegend(boxId,secId,catalog,decl,hideSet,info,showAllId,hideAllId){
     checks.forEach(c=>c.checked=!hide);applyVis();reheat(8*SEP);};
   const showAll=document.getElementById(showAllId),hideAll=document.getElementById(hideAllId);
   if(showAll)showAll.onclick=()=>setAll(false);
-  if(hideAll)hideAll.onclick=()=>setAll(true);}
-buildLegend("legend","nodelegendsec",NODE_CLASSES,NODE_DECL,hideNode,classesPresent(NODES,NODE_DECL),"nodeshowall","nodehideall");
-buildLegend("edgelegend","edgelegendsec",EDGE_CLASSES,EDGE_DECL,hideEdge,classesPresent(EDGES,EDGE_DECL),"edgeshowall","edgehideall");
+  if(hideAll)hideAll.onclick=()=>setAll(true);
+  // Any/All: switches this legend's visibility logic between OR (any shown
+  // class keeps an element visible) and AND (every one of its classes must be
+  // shown) - see visBy. Per-legend, not global, since node/edge classes are
+  // independent hide-sets.
+  const anyAll=document.getElementById(anyAllId);
+  if(anyAll)anyAll.onclick=()=>{const all=!anyAll.classList.contains("on");
+    anyAll.classList.toggle("on",all);anyAll.textContent="Match: "+(all?"All":"Any");
+    setMatchAll(all);applyVis();reheat(8*SEP);};}
+buildLegend("legend","nodelegendsec",NODE_CLASSES,NODE_DECL,hideNode,classesPresent(NODES,NODE_DECL),"nodeshowall","nodehideall","nodeanyall",v=>nodeMatchAll=v);
+buildLegend("edgelegend","edgelegendsec",EDGE_CLASSES,EDGE_DECL,hideEdge,classesPresent(EDGES,EDGE_DECL),"edgeshowall","edgehideall","edgeanyall",v=>edgeMatchAll=v);
 // apply the default-hidden state up front: remove from view AND the physics so
 // they don't shove the visible nodes around before you ever touch a legend.
 applyVis();

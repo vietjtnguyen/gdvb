@@ -89,6 +89,12 @@ Check things off as they land.
 - [x] **"Show all" / "Hide all" buttons** on each legend (node classes / edge
       classes) — bulk-set every class in that legend in one click instead of
       per-row toggling; single `applyVis()`/`reheat()` for the whole batch.
+- [x] **Any/All visibility toggle** — a per-legend "Match: Any/All" button
+      switches that legend's visibility logic between OR (any of an element's
+      classes shown keeps it visible — the original/default) and AND (every
+      one of its classes must be shown). Independent per legend (`nodeMatchAll`/
+      `edgeMatchAll`), since node classes and edge classes have separate
+      hide-sets (`visBy` takes the mode as a parameter).
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
       Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it
@@ -143,12 +149,6 @@ Check things off as they land.
 
 ## Viewer / UX
 
-- [ ] **Any/All visibility toggle** — a per-legend switch between the current
-      OR semantics (visible if *any* of an element's classes are shown — today's
-      only mode, see `visBy`/`nodeVisible`/`edgeVisible`) and AND semantics
-      (visible only if *all* of its classes are shown). Needs its own toggle per
-      legend (node vs. edge), since an element's class list is checked against
-      one legend's hide-set at a time.
 - [ ] **Choose BFS roots explicitly** — let **pinned** nodes force-seed as roots
       for Topo BFS (`topoBFS`'s in-degree-order seeding, `render-graph-html.py`
       `topoBFS()`), instead of always picking real in-degree-0 nodes first.
