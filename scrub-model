@@ -20,7 +20,10 @@ Nine scrub operations, ALL ENABLED BY DEFAULT, each disableable with --no-<op>:
   hostname   replace the capture hostname (meta.host) everywhere it appears.
   users      redact usernames / uids (user: NAME (uid N) -> user: <user> (uid x));
              root / uid 0 kept (the proc-root class already reveals it). Also blanks
-             structured user/group/uid/gid fields (e.g. dirtree-graph models).
+             structured user/group/uid/gid fields (e.g. dirtree-graph models), sweeps
+             the known username(s) wherever else they appear, and redacts the username
+             component of any /home/<user>/ or /Users/<user>/ path - so absolute source
+             paths from cmake-graph / lsp-graph (which carry no user field) are covered.
   pids       remove PIDs from display: drop the "(pid)" in a proc label, the "ppid: M"
              field, and the socket "owners:" line (ownership is still shown by the
              graph edges). Fake pids would just be distracting, so they're removed.
@@ -135,6 +138,10 @@ _OWNERS_RE = re.compile(
 _CMD_RE = re.compile(r"(\ncmd: )([^\n]*)")
 _INODE_RE = re.compile(r"   inode: \S+")
 _LABEL_PID_RE = re.compile(r" *\(\d+\)$")  # trailing " (pid)" in a proc label
+# The component right after /home/ or /Users/ is a username - redact it in any path,
+# even when the model carries no explicit user field to seed a needle from (e.g.
+# cmake-graph / lsp-graph absolute source paths). Generic, no username needed.
+_HOME_PATH_RE = re.compile(r"(/home/|/Users/)([^/\n]+)")
 _LOCAL_RE = re.compile(r"(\nlocal: )([^\n]*)")
 # sockets-graph truncates long labels to 28 chars with "…"; if the cut fell inside an
 # address, redaction leaves a dangling placeholder + ellipsis (e.g. "udp [x:x:x:x…").
@@ -233,6 +240,7 @@ def scrub(model, enabled):
     def redact_names(s):
         if "users" not in enabled:
             return s
+        s = _HOME_PATH_RE.sub(r"\1<user>", s)  # username in a /home//Users/ path
         for name in user_needles:
             s = re.sub(r"\b" + re.escape(name) + r"\b", "<user>", s)
         for name in group_needles:
@@ -301,6 +309,7 @@ def scrub(model, enabled):
                 v = meta[k]
                 if "ips" in enabled:
                     v = redact_ips(v)
+                v = redact_names(v)  # e.g. dirtree title "dirtree — /home/<user>/proj"
                 meta[k] = redact_host(v)
         if "hostname" in enabled and isinstance(meta.get("host"), str):
             meta["host"] = "HOST"
