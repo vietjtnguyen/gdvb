@@ -95,6 +95,15 @@ Check things off as they land.
       one of its classes must be shown). Independent per legend (`nodeMatchAll`/
       `edgeMatchAll`), since node classes and edge classes have separate
       hide-sets (`visBy` takes the mode as a parameter).
+- [x] **`dirtree-graph`: "Siblings" traversal** — a new `edge.sibling` class
+      chains each directory's children together in label order (O(k) edges per
+      directory of k children, not a full O(k²) pairwise mesh); flooding from
+      any one child along that chain reaches every sibling without walking
+      back up through the parent and down its whole subtree. Hidden by default
+      (not a real filesystem relationship, would clutter the skeleton) - still
+      traversal-selectable while hidden, since only node visibility gates the
+      walk. Synthesized once in `_finalize` from the existing containment
+      edges, shared by both the walk and stdin path-list builders.
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
       Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it
@@ -129,10 +138,6 @@ Check things off as they land.
       generation time — deconflicting the id namespace is only one small part
       of the actual stitching problem, so solve them together rather than
       pre-committing to an id scheme now.
-- [ ] **`dirtree-graph`: "Siblings" traversal** — a rule connecting nodes that
-      share the same immediate parent directory (independent of the existing
-      containment tree edges), so sibling-hopping doesn't require going back up
-      through the parent.
 - [ ] **`lsp-graph`: types as first-class nodes** — currently only functions/
       methods/constructors (SymbolKind restricted to the call-hierarchy kinds)
       are emitted; classes/structs/enums/etc. should appear as their own class

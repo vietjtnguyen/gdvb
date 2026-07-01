@@ -52,6 +52,17 @@ EDGE_CLASSES = [
     {"id": "file", "label": "→ file", "color": "#d3d7e0"},
     {"id": "link", "label": "→ symlink entry", "color": "#cbb8ea"},
     {"id": "symlink", "label": "symlink target", "color": "#8A63D2"},
+    # Chains consecutive same-parent children (see _finalize) purely so the
+    # "Siblings" traversal has an edge to flood along; hidden by default since
+    # it's not a real filesystem relationship and would otherwise clutter the
+    # skeleton. Traversal still works while hidden - only node visibility
+    # gates the walk (see render-graph-html.py's runTraversal).
+    {
+        "id": "sibling",
+        "label": "↔ sibling (same parent)",
+        "color": "#e8a33d",
+        "hidden": True,
+    },
 ]
 
 # Appearance keyed on dirtree's classes. `edge.dir`/`edge.file` weight the
@@ -77,6 +88,10 @@ STYLE = [
         },
     },
     {
+        "selector": "edge.sibling",
+        "style": {"line-style": "dotted", "width": 1, "target-arrow-shape": "none"},
+    },
+    {
         "selector": "node.executable",
         "style": {"border-width": 3, "border-color": "#2FA86E"},
     },
@@ -87,6 +102,7 @@ EDGE_KEY = [
     "bold = subdirectory",
     "thin = file",
     "dashed = symlink target",
+    "dotted amber, no arrowhead = sibling chain (same parent; hidden by default)",
     "green border = executable",
 ]
 
@@ -105,6 +121,15 @@ TRAVERSALS = [
         "label": "⬆ Path to root",
         "mode": "flood",
         "rules": [{"edge": "edge.child", "dir": "in"}],
+    },
+    # Flood along the sibling chain (see _finalize): from any one child, this
+    # reaches every other child of the same parent, without walking back up
+    # through the parent and down its whole subtree.
+    {
+        "id": "siblings",
+        "label": "↔ Siblings",
+        "mode": "flood",
+        "rules": [{"edge": "edge.sibling", "dir": "both"}],
     },
 ]
 
@@ -230,6 +255,30 @@ def _finalize(root, nodes, edges, node_ids, pending_symlinks, truncated):
                 }
             )
     edges = [e for e in edges if e["source"] in node_ids and e["target"] in node_ids]
+
+    # Sibling chain: group children by parent (from the containment edges just
+    # filtered), sorted by label, and connect each to the next. A chain (O(k)
+    # edges per directory of k children) rather than a full pairwise mesh
+    # (O(k^2)) - flooding it from any child still reaches every sibling, since
+    # the chain is one connected run.
+    by_parent = {}
+    for e in edges:
+        if "child" in e["classes"]:
+            by_parent.setdefault(e["source"], []).append(e["target"])
+    label_of = {n["id"]: n["label"] for n in nodes}
+    for children in by_parent.values():
+        if len(children) < 2:
+            continue
+        children = sorted(children, key=lambda cid: label_of.get(cid, cid))
+        for a, b in zip(children, children[1:]):
+            edges.append(
+                {
+                    "source": a,
+                    "target": b,
+                    "label": "sibling",
+                    "classes": ["sibling"],
+                }
+            )
 
     counts = {"nodes": len(nodes), "edges": len(edges), "by_type": {}, "by_class": {}}
     for n in nodes:
