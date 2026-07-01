@@ -372,8 +372,18 @@ def _short(s, n=42):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+# Labels are shown in full and left to the viewer's text wrapping; we only guard
+# against pathological lengths blowing up a node, and never elide prematurely:
+#   - IP addresses are bounded (IPv6 tops out ~47 chars) -> no cap.
+#   - process names: the kernel caps comm at 15 chars, but guard extreme cases anyway.
+#   - UNIX-socket names are genuinely unbounded -> the tightest cap, roughly four
+#     wrapped lines (~100 chars at the viewer's text-max-width:150 / font-size:11).
+PROC_LABEL_MAX = 1024
+UDS_LABEL_MAX = 100
+
+
 def proc_label(p):
-    return _short("%s (%d)" % (p["comm"], p["pid"]), 26)
+    return _short("%s (%d)" % (p["comm"], p["pid"]), PROC_LABEL_MAX)
 
 
 def proc_full(p, nsock):
@@ -394,11 +404,11 @@ def sock_label(s):
         if not path:
             return "unix:%s" % s["kind"]  # unnamed
         if path.startswith("@"):
-            return "@" + os.path.basename(path[1:] or path)
-        return _short(os.path.basename(path) or path, 28)
+            return _short("@" + os.path.basename(path[1:] or path), UDS_LABEL_MAX)
+        return _short(os.path.basename(path) or path, UDS_LABEL_MAX)
     if s["listening"]:
         return "%s :%d LISTEN" % (s["base"], s["lport"])
-    return _short("%s %s" % (s["base"], s["local"]), 28)
+    return "%s %s" % (s["base"], s["local"])
 
 
 def sock_full(s, pids):
@@ -509,9 +519,7 @@ def build_graph(procs, socks, inode2pids, is_root, ignore=None, captured=None):
                 )
         else:
             rid = "r:%s" % s["peer"]
-            add_node(
-                rid, _short(s["peer"], 30), "remote endpoint\n%s" % s["peer"], "remote"
-            )
+            add_node(rid, s["peer"], "remote endpoint\n%s" % s["peer"], "remote")
             edges.append(
                 {
                     "source": sid,
