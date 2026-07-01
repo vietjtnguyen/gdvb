@@ -76,9 +76,10 @@ from it — the JSON model is the only contract.
 
 **`dirtree-graph`** — walk a directory into the model: nodes are directories, files,
 and symlinks; edges are parent→child containment plus a **distinct dashed edge** from each
-symlink to its target. Executable files get a green border; it ships **Descendants** /
-**Path to root** traversals and a **directory skeleton** force structure, and each node
-carries `size`/`mtime`/`ctime`/owner/`perms` in its tooltip.
+symlink to its target. Executable files get a green border; it ships **Descendants**,
+**Parent** (one level up), **Path to root**, and **Siblings** (same immediate parent)
+traversals plus a **directory skeleton** force structure, and each node carries
+`size`/`mtime`/`ctime`/owner/`perms` in its tooltip.
 
 ```bash
 dirtree-graph ~/project | render-graph-html.py > tree.html
