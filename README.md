@@ -160,7 +160,7 @@ sockets-graph | scrub-model | render-graph-html.py > safe.html
 scrub-model < snapshot.json | render-graph-html.py            # a saved snapshot
 ```
 
-Nine scrub operations run by default (each disableable with `--no-<op>`): **ids** (rewrite node ids to opaque tokens — they're never displayed, so this strips the pid/ip/inode embedded in them), **ips** (non-loopback IPv4/IPv6 → placeholder, port kept; loopback and private/LAN handling is deliberate — private ranges *are* redacted), **hostname**, **users** (usernames/uids, keeping `root`), **pids** (consistent fake numbers, so the tree stays navigable), **cmdline** (keep the program, drop its args), **unix-paths** (keep basename, drop directory), **timestamp**, **inodes**. It's format-aware for socket captures but degrades gracefully on any model (the socket-specific ops simply match nothing).
+Nine scrub operations run by default (each disableable with `--no-<op>`): **ids** (rewrite node ids to opaque tokens — they're never displayed, so this strips the pid/ip/inode embedded in them), **ips** (non-loopback IPv4/IPv6 → placeholder, port kept; loopback and private/LAN handling is deliberate — private ranges *are* redacted), **hostname**, **users** (usernames/uids, keeping `root`), **pids** (remove pids/ppids and the socket `owners:` line — ownership is still shown by the edges), **cmdline** (keep the program, drop its args), **unix-paths** (keep basename, drop directory), **timestamp**, **inodes**. It's format-aware for socket captures but degrades gracefully on any model (the socket-specific ops simply match nothing).
 
 ## How it works
 

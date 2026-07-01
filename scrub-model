@@ -21,8 +21,9 @@ Nine scrub operations, ALL ENABLED BY DEFAULT, each disableable with --no-<op>:
   users      redact usernames / uids (user: NAME (uid N) -> user: <user> (uid x));
              root / uid 0 kept (the proc-root class already reveals it). Also blanks
              structured user/group/uid/gid fields (e.g. dirtree-graph models).
-  pids       obfuscate PIDs consistently (each real pid -> a stable fake number) in
-             labels (comm (pid)), ppid:, and owners: - structure stays navigable.
+  pids       remove PIDs from display: drop the "(pid)" in a proc label, the "ppid: M"
+             field, and the socket "owners:" line (ownership is still shown by the
+             graph edges). Fake pids would just be distracting, so they're removed.
   cmdline    keep the program (argv[0]), drop its arguments (cmd: PROG [args redacted]).
   unix-paths redact the directory of UNIX-socket paths, keeping the basename.
   timestamp  replace meta.captured with "n/a".
@@ -127,12 +128,17 @@ def redact_ips(s):
 # Format-aware text ops (keyed to sockets-graph's full/label templates)
 # ---------------------------------------------------------------------------
 _USER_RE = re.compile(r"user: (\S+) \(uid (\d+)\)")
-_PPID_RE = re.compile(r"ppid: (\d+)")
-_OWNERS_RE = re.compile(r"(\nowners: )([^\n]*)")
+_PPID_RE = re.compile(r" *ppid: \d+")  # "   ppid: M" segment in proc tooltips
+_OWNERS_RE = re.compile(
+    r"\nowners: [^\n]*"
+)  # whole "owners: a,b,c" line in sock tooltips
 _CMD_RE = re.compile(r"(\ncmd: )([^\n]*)")
 _INODE_RE = re.compile(r"   inode: \S+")
-_LABEL_PID_RE = re.compile(r"\((\d+)\)$")
+_LABEL_PID_RE = re.compile(r" *\(\d+\)$")  # trailing " (pid)" in a proc label
 _LOCAL_RE = re.compile(r"(\nlocal: )([^\n]*)")
+# sockets-graph truncates long labels to 28 chars with "…"; if the cut fell inside an
+# address, redaction leaves a dangling placeholder + ellipsis (e.g. "udp [x:x:x:x…").
+_TRUNC_IP_RE = re.compile(r"(x\.x\.x\.x|x:x:x:x)…+")
 
 
 def redact_users_text(s):
@@ -180,33 +186,19 @@ def redact_inode_text(s):
     return _INODE_RE.sub("", s)
 
 
+def _tidy_truncated_ip(s):
+    """Clean up the artifact left when a label was truncated mid-address (see
+    _TRUNC_IP_RE): drop the now-meaningless ellipsis, and re-close a bracket the
+    truncation cut off, so "udp [x:x:x:x…" reads as "udp [x:x:x:x]"."""
+    new = _TRUNC_IP_RE.sub(r"\1", s)
+    if new != s and new.count("[") > new.count("]"):
+        new += "]"
+    return new
+
+
 # ---------------------------------------------------------------------------
 # scrub driver
 # ---------------------------------------------------------------------------
-def build_pid_map(model):
-    """real pid -> stable fake pid. Seed from p:<pid> ids (sorted, so common pids get
-    stable low numbers); extend lazily for ppids/owners that reference uncaptured
-    processes. 0 (no parent) maps to itself."""
-    pids = set()
-    for n in model.get("nodes", []):
-        m = re.match(r"^p:(\d+)$", str(n.get("id", "")))
-        if m:
-            pids.add(int(m.group(1)))
-    pid_map = {0: 0}
-    counter = [1000]
-
-    def fake(real):
-        real = int(real)
-        if real not in pid_map:
-            pid_map[real] = counter[0]
-            counter[0] += 1
-        return pid_map[real]
-
-    for p in sorted(pids):
-        fake(p)
-    return fake
-
-
 def build_name_needles(model):
     """Collect the real username / group-name strings to redact as needles across all
     text. Two sources: structured user/group fields (dirtree-graph etc.) and the socket
@@ -235,7 +227,6 @@ def build_name_needles(model):
 
 
 def scrub(model, enabled):
-    fake_pid = build_pid_map(model)
     host = (model.get("meta") or {}).get("host")
     user_needles, group_needles = build_name_needles(model)
 
@@ -248,15 +239,6 @@ def scrub(model, enabled):
             s = re.sub(r"\b" + re.escape(name) + r"\b", "<group>", s)
         return s
 
-    def redact_pids_full(s):
-        s = _PPID_RE.sub(lambda m: "ppid: %d" % fake_pid(m.group(1)), s)
-        s = _OWNERS_RE.sub(
-            lambda m: m.group(1)
-            + re.sub(r"\d+", lambda d: str(fake_pid(d.group(0))), m.group(2)),
-            s,
-        )
-        return s
-
     def redact_host(s):
         if host and "hostname" in enabled:
             s = re.sub(r"\b" + re.escape(host) + r"\b", "HOST", s)
@@ -264,9 +246,10 @@ def scrub(model, enabled):
 
     def scrub_label(s):
         if "pids" in enabled:
-            s = _LABEL_PID_RE.sub(lambda m: "(%d)" % fake_pid(m.group(1)), s)
+            s = _LABEL_PID_RE.sub("", s)  # drop trailing " (pid)"
         if "ips" in enabled:
             s = redact_ips(s)
+            s = _tidy_truncated_ip(s)
         s = redact_names(s)
         s = redact_host(s)
         return s
@@ -281,7 +264,10 @@ def scrub(model, enabled):
         if "inodes" in enabled:
             s = redact_inode_text(s)
         if "pids" in enabled:
-            s = redact_pids_full(s)
+            s = _PPID_RE.sub("", s)  # drop "   ppid: M"
+            s = _OWNERS_RE.sub(
+                "", s
+            )  # drop the "owners: ..." line (ownership is in edges)
         if "ips" in enabled:
             s = redact_ips(s)
         # names last (after the socket `user: NAME (uid N)` regex has already handled

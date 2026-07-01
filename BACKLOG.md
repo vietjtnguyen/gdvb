@@ -114,8 +114,9 @@ Check things off as they land.
       `hostname` (needle from `meta.host`), `users` (socket `user: NAME (uid N)` regex +
       structured `user`/`group`/`uid`/`gid` fields + a name-needle sweep that also catches
       the name embedded elsewhere, e.g. dirtree's `perms user:group` tooltip or a
-      `/home/<user>/…` cmdline path; `root`/uid 0 kept), `pids` (consistent real→fake map,
-      tree stays navigable), `cmdline` (keep argv[0], drop args), `unix-paths` (keep
+      `/home/<user>/…` cmdline path; `root`/uid 0 kept), `pids` (remove pids/ppids/
+      owner-pids from display — fake numbers were just distracting), `cmdline` (keep argv[0],
+      drop args), `unix-paths` (keep
       basename, drop dir), `timestamp` (`meta.captured`→`"n/a"`), `inodes`. Format-aware for
       socket captures (regexes keyed to `sockets-graph`'s `proc_*`/`sock_full` templates —
       a documented coupling), graceful on any other model. Closes this item.
