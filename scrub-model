@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""scrub-model - redact host-identifying data from a socketscope model JSON.
+
+A post-process FILTER (not a generator): reads one graph-model JSON on stdin (or a
+file arg), scrubs sensitive fields, and writes the scrubbed model JSON to stdout.
+It slots into the pipe so you can safely share the resulting HTML:
+
+    sockets-graph | scrub-model | render-graph-html.py > safe.html
+    scrub-model < snapshot.json | render-graph-html.py          # a saved snapshot
+
+Nine scrub operations, ALL ENABLED BY DEFAULT, each disableable with --no-<op>:
+
+  ids        rewrite every node id to an opaque token (n0, n1, ...) and remap edge
+             endpoints. Node ids are never displayed/searched/used in a selector, so
+             this is a safe, collision-free way to strip the pid/ip/inode embedded in
+             ids (p:<pid>, r:<ip>:<port>, s:<inode>).
+  ips        replace non-loopback IPv4/IPv6 addresses with a placeholder (port kept).
+             Loopback (127.0.0.0/8, ::1) and the unspecified address are left alone;
+             private/LAN ranges ARE redacted.
+  hostname   replace the capture hostname (meta.host) everywhere it appears.
+  users      redact usernames / uids (user: NAME (uid N) -> user: <user> (uid x));
+             root / uid 0 kept (the proc-root class already reveals it). Also blanks
+             structured user/group/uid/gid fields (e.g. dirtree-graph models).
+  pids       obfuscate PIDs consistently (each real pid -> a stable fake number) in
+             labels (comm (pid)), ppid:, and owners: - structure stays navigable.
+  cmdline    keep the program (argv[0]), drop its arguments (cmd: PROG [args redacted]).
+  unix-paths redact the directory of UNIX-socket paths, keeping the basename.
+  timestamp  replace meta.captured with "n/a".
+  inodes     remove the inode: <N> field from socket tooltips.
+
+Graceful on ANY model: the socket-format-aware ops (users/pids/cmdline/unix-paths/
+inodes) simply match nothing and pass through on non-socket models, while ids/ips/
+hostname/timestamp still apply. Stdlib only.
+
+COUPLING NOTE: the format-aware regexes below are keyed to sockets-graph's
+proc_label / proc_full / sock_full string templates. If those emitted strings change,
+update the corresponding patterns here.
+"""
+import re
+import os
+import sys
+import json
+import socket
+import argparse
+
+ALL_OPS = [
+    "ids",
+    "ips",
+    "hostname",
+    "users",
+    "pids",
+    "cmdline",
+    "unix-paths",
+    "timestamp",
+    "inodes",
+]
+
+# ---------------------------------------------------------------------------
+# IP redaction (generic)
+# ---------------------------------------------------------------------------
+_IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+# bracketed IPv6 as socketscope emits it: [addr]:port
+_IPV6_BRACKET_RE = re.compile(r"\[([0-9A-Fa-f:.]+)\]")
+# bare IPv6 candidate: >=2 colons, hex groups; validated via inet_pton before use
+_IPV6_BARE_RE = re.compile(
+    r"(?<![\w:.])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![\w:.])"
+)
+
+
+def _is_v4(s):
+    try:
+        socket.inet_pton(socket.AF_INET, s)
+        return True
+    except OSError:
+        return False
+
+
+def _is_v6(s):
+    try:
+        socket.inet_pton(socket.AF_INET6, s)
+        return True
+    except OSError:
+        return False
+
+
+def _v4_safe(ip):
+    # loopback 127/8 and the unspecified 0.0.0.0 are not identifying -> keep.
+    return ip.startswith("127.") or ip == "0.0.0.0"
+
+
+def _v6_safe(ip):
+    try:
+        packed = socket.inet_pton(socket.AF_INET6, ip)
+    except OSError:
+        return True  # not a real v6 -> don't touch
+    return packed == socket.inet_pton(socket.AF_INET6, "::1") or packed == (
+        b"\x00" * 16
+    )
+
+
+def redact_ips(s):
+    def v4(m):
+        ip = m.group(0)
+        if not _is_v4(ip):  # e.g. 999.1.2.3 or a version string
+            return ip
+        return ip if _v4_safe(ip) else "x.x.x.x"
+
+    def v6b(m):
+        inner = m.group(1)
+        if not _is_v6(inner):
+            return m.group(0)
+        return "[%s]" % inner if _v6_safe(inner) else "[x:x:x:x]"
+
+    def v6bare(m):
+        ip = m.group(0)
+        if not _is_v6(ip) or _v6_safe(ip):
+            return ip
+        return "x:x:x:x"
+
+    s = _IPV4_RE.sub(v4, s)
+    s = _IPV6_BRACKET_RE.sub(v6b, s)
+    s = _IPV6_BARE_RE.sub(v6bare, s)
+    return s
+
+
+# ---------------------------------------------------------------------------
+# Format-aware text ops (keyed to sockets-graph's full/label templates)
+# ---------------------------------------------------------------------------
+_USER_RE = re.compile(r"user: (\S+) \(uid (\d+)\)")
+_PPID_RE = re.compile(r"ppid: (\d+)")
+_OWNERS_RE = re.compile(r"(\nowners: )([^\n]*)")
+_CMD_RE = re.compile(r"(\ncmd: )([^\n]*)")
+_INODE_RE = re.compile(r"   inode: \S+")
+_LABEL_PID_RE = re.compile(r"\((\d+)\)$")
+_LOCAL_RE = re.compile(r"(\nlocal: )([^\n]*)")
+
+
+def redact_users_text(s):
+    def repl(m):
+        name, uid = m.group(1), m.group(2)
+        if name == "root" or uid == "0":
+            return m.group(0)
+        return "user: <user> (uid x)"
+
+    return _USER_RE.sub(repl, s)
+
+
+def redact_cmdline_text(s):
+    def repl(m):
+        val = m.group(2)
+        if val.startswith("["):  # kernel-thread comm, e.g. [kthreadd]
+            return m.group(0)
+        prog, sep, _rest = val.partition(" ")
+        if not sep:  # program with no arguments
+            return m.group(0)
+        return "%s%s [args redacted]" % (m.group(1), prog)
+
+    return _CMD_RE.sub(repl, s)
+
+
+def redact_unix_path_text(s):
+    # Only touch UNIX-socket tooltips (their `full` starts with "unix/").
+    if not s.startswith("unix/"):
+        return s
+
+    def repl(m):
+        path = m.group(2)
+        if path in ("(unnamed)", "-", ""):
+            return m.group(0)
+        if path.startswith("@"):
+            return "%s@<name>" % m.group(1)
+        if path.startswith("/"):
+            return "%s…/%s" % (m.group(1), os.path.basename(path) or "")
+        return m.group(0)
+
+    return _LOCAL_RE.sub(repl, s)
+
+
+def redact_inode_text(s):
+    return _INODE_RE.sub("", s)
+
+
+# ---------------------------------------------------------------------------
+# scrub driver
+# ---------------------------------------------------------------------------
+def build_pid_map(model):
+    """real pid -> stable fake pid. Seed from p:<pid> ids (sorted, so common pids get
+    stable low numbers); extend lazily for ppids/owners that reference uncaptured
+    processes. 0 (no parent) maps to itself."""
+    pids = set()
+    for n in model.get("nodes", []):
+        m = re.match(r"^p:(\d+)$", str(n.get("id", "")))
+        if m:
+            pids.add(int(m.group(1)))
+    pid_map = {0: 0}
+    counter = [1000]
+
+    def fake(real):
+        real = int(real)
+        if real not in pid_map:
+            pid_map[real] = counter[0]
+            counter[0] += 1
+        return pid_map[real]
+
+    for p in sorted(pids):
+        fake(p)
+    return fake
+
+
+def build_name_needles(model):
+    """Collect the real username / group-name strings to redact as needles across all
+    text. Two sources: structured user/group fields (dirtree-graph etc.) and the socket
+    `user: NAME (uid N)` tooltip line. Needle replacement (not just field/regex edits)
+    catches the same name wherever it's embedded - e.g. dirtree's `perms user:group`
+    tooltip, or a username inside a cmdline path (`/home/<user>/...`). root / uid 0 are
+    never collected. Returns (user_names, group_names), each a length-desc list so a
+    longer name is replaced before a shorter one it might contain."""
+    users, groups = set(), set()
+    for n in model.get("nodes", []):
+        u = n.get("user")
+        if isinstance(u, str) and len(u) >= 2 and u != "root":
+            users.add(u)
+        g = n.get("group")
+        if isinstance(g, str) and len(g) >= 2 and g != "root":
+            groups.add(g)
+        full = n.get("full")
+        if isinstance(full, str):
+            for m in _USER_RE.finditer(full):
+                if m.group(1) != "root" and m.group(2) != "0" and len(m.group(1)) >= 2:
+                    users.add(m.group(1))
+    return (
+        sorted(users, key=len, reverse=True),
+        sorted(groups, key=len, reverse=True),
+    )
+
+
+def scrub(model, enabled):
+    fake_pid = build_pid_map(model)
+    host = (model.get("meta") or {}).get("host")
+    user_needles, group_needles = build_name_needles(model)
+
+    def redact_names(s):
+        if "users" not in enabled:
+            return s
+        for name in user_needles:
+            s = re.sub(r"\b" + re.escape(name) + r"\b", "<user>", s)
+        for name in group_needles:
+            s = re.sub(r"\b" + re.escape(name) + r"\b", "<group>", s)
+        return s
+
+    def redact_pids_full(s):
+        s = _PPID_RE.sub(lambda m: "ppid: %d" % fake_pid(m.group(1)), s)
+        s = _OWNERS_RE.sub(
+            lambda m: m.group(1)
+            + re.sub(r"\d+", lambda d: str(fake_pid(d.group(0))), m.group(2)),
+            s,
+        )
+        return s
+
+    def redact_host(s):
+        if host and "hostname" in enabled:
+            s = re.sub(r"\b" + re.escape(host) + r"\b", "HOST", s)
+        return s
+
+    def scrub_label(s):
+        if "pids" in enabled:
+            s = _LABEL_PID_RE.sub(lambda m: "(%d)" % fake_pid(m.group(1)), s)
+        if "ips" in enabled:
+            s = redact_ips(s)
+        s = redact_names(s)
+        s = redact_host(s)
+        return s
+
+    def scrub_full(s):
+        if "users" in enabled:
+            s = redact_users_text(s)
+        if "cmdline" in enabled:
+            s = redact_cmdline_text(s)
+        if "unix-paths" in enabled:
+            s = redact_unix_path_text(s)
+        if "inodes" in enabled:
+            s = redact_inode_text(s)
+        if "pids" in enabled:
+            s = redact_pids_full(s)
+        if "ips" in enabled:
+            s = redact_ips(s)
+        # names last (after the socket `user: NAME (uid N)` regex has already handled
+        # its own line) so the needle sweep only mops up embeddings elsewhere.
+        s = redact_names(s)
+        s = redact_host(s)
+        return s
+
+    # per-node text + structured fields
+    for n in model.get("nodes", []):
+        if isinstance(n.get("label"), str):
+            n["label"] = scrub_label(n["label"])
+        if isinstance(n.get("full"), str):
+            n["full"] = scrub_full(n["full"])
+        if "users" in enabled:
+            _scrub_struct_owner(n)
+
+    # edge labels (relationship words - harmless, but keep ips/host clean)
+    for e in model.get("edges", []):
+        if isinstance(e.get("label"), str):
+            lbl = e["label"]
+            if "ips" in enabled:
+                lbl = redact_ips(lbl)
+            e["label"] = redact_host(lbl)
+
+    # meta
+    meta = model.get("meta")
+    if isinstance(meta, dict):
+        for k in ("title", "subtitle"):
+            if isinstance(meta.get(k), str):
+                v = meta[k]
+                if "ips" in enabled:
+                    v = redact_ips(v)
+                meta[k] = redact_host(v)
+        if "hostname" in enabled and isinstance(meta.get("host"), str):
+            meta["host"] = "HOST"
+        if "timestamp" in enabled and "captured" in meta:
+            meta["captured"] = "n/a"
+
+    # node ids -> opaque tokens (+ remap edges). Last, since ids aren't displayed.
+    if "ids" in enabled:
+        id_map = {}
+        for i, n in enumerate(model.get("nodes", [])):
+            old = n.get("id")
+            new = "n%d" % i
+            id_map[old] = new
+            n["id"] = new
+        for e in model.get("edges", []):
+            if e.get("source") in id_map:
+                e["source"] = id_map[e["source"]]
+            if e.get("target") in id_map:
+                e["target"] = id_map[e["target"]]
+
+    return model
+
+
+def _scrub_struct_owner(n):
+    """Blank structured owner fields (dirtree-graph etc.); keep root / 0."""
+    if isinstance(n.get("user"), str) and n["user"] != "root":
+        n["user"] = "<user>"
+    if isinstance(n.get("group"), str) and n["group"] != "root":
+        n["group"] = "<group>"
+    if "uid" in n and n["uid"] not in (0, "0"):
+        n["uid"] = "x"
+    if "gid" in n and n["gid"] not in (0, "0"):
+        n["gid"] = "x"
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="scrub-model",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Redact host-identifying data from a socketscope model JSON.\n"
+            "Reads a model (stdin or a file), writes the scrubbed model to stdout:\n"
+            "  sockets-graph | scrub-model | render-graph-html.py > safe.html"
+        ),
+        epilog=(
+            "scrub operations (all on by default; disable one with --no-<op>):\n  "
+            + ", ".join(ALL_OPS)
+        ),
+    )
+    ap.add_argument(
+        "input",
+        nargs="?",
+        default="-",
+        metavar="MODEL",
+        help="model JSON path; omit or '-' to read stdin",
+    )
+    for op in ALL_OPS:
+        ap.add_argument(
+            "--no-" + op,
+            dest="no_" + op.replace("-", "_"),
+            action="store_true",
+            help="disable the '%s' scrub" % op,
+        )
+    args = ap.parse_args()
+
+    src = args.input
+    src_label = "<stdin>" if src == "-" else src
+    if src == "-" and sys.stdin.isatty():
+        ap.error(
+            "no input: pipe a model JSON or pass a file. e.g.\n"
+            "  sockets-graph | scrub-model | render-graph-html.py"
+        )
+    try:
+        if src == "-":
+            model = json.load(sys.stdin)
+        else:
+            with open(src, encoding="utf-8") as fh:
+                model = json.load(fh)
+    except OSError as e:
+        raise SystemExit("scrub-model: cannot read %s: %s" % (src_label, e))
+    except json.JSONDecodeError as e:
+        raise SystemExit("scrub-model: %s is not valid JSON: %s" % (src_label, e))
+
+    if not isinstance(model, dict) or not isinstance(model.get("nodes"), list):
+        raise SystemExit(
+            "scrub-model: %s is not a graph model (need an object with a `nodes` array)"
+            % src_label
+        )
+
+    enabled = {op for op in ALL_OPS if not getattr(args, "no_" + op.replace("-", "_"))}
+    scrub(model, enabled)
+
+    json.dump(model, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    disabled = [op for op in ALL_OPS if op not in enabled]
+    print(
+        "scrub-model: %d op(s) applied%s"
+        % (len(enabled), (" (disabled: %s)" % ", ".join(disabled)) if disabled else ""),
+        file=sys.stderr,
+    )
+
+
+if __name__ == "__main__":
+    main()

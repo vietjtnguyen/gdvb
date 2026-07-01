@@ -151,7 +151,16 @@ The graph self-organizes with a live force simulation that settles and stops. Th
 
 ## A note on sharing the output
 
-A sockets graph embeds a detailed picture of the host: process command lines (which can include arguments, paths, sometimes secrets), local and remote IP addresses, and UNIX socket paths. **Treat `sockets.html` like the sensitive snapshot it is** — it's git-ignored by default for that reason. Scrub or filter (`sockets-graph --ignore`) before sharing externally.
+A sockets graph embeds a detailed picture of the host: process command lines (which can include arguments, paths, sometimes secrets), local and remote IP addresses, and UNIX socket paths. **Treat `sockets.html` like the sensitive snapshot it is** — it's git-ignored by default for that reason. Filter with `sockets-graph --ignore` to drop whole node classes, and/or run the snapshot through **`scrub-model`** before sharing externally.
+
+`scrub-model` is a redaction **filter**: it reads a model JSON on stdin, redacts host-identifying data, and writes the scrubbed model to stdout, so it drops straight into the pipe:
+
+```bash
+sockets-graph | scrub-model | render-graph-html.py > safe.html
+scrub-model < snapshot.json | render-graph-html.py            # a saved snapshot
+```
+
+Nine scrub operations run by default (each disableable with `--no-<op>`): **ids** (rewrite node ids to opaque tokens — they're never displayed, so this strips the pid/ip/inode embedded in them), **ips** (non-loopback IPv4/IPv6 → placeholder, port kept; loopback and private/LAN handling is deliberate — private ranges *are* redacted), **hostname**, **users** (usernames/uids, keeping `root`), **pids** (consistent fake numbers, so the tree stays navigable), **cmdline** (keep the program, drop its args), **unix-paths** (keep basename, drop directory), **timestamp**, **inodes**. It's format-aware for socket captures but degrades gracefully on any model (the socket-specific ops simply match nothing).
 
 ## How it works
 

@@ -104,6 +104,21 @@ Check things off as they land.
       traversal-selectable while hidden, since only node visibility gates the
       walk. Synthesized once in `_finalize` from the existing containment
       edges, shared by both the walk and stdin path-list builders.
+- [x] **`scrub-model` — redaction filter for safe sharing.** A standalone stdin→stdout
+      filter (NOT a generator — deliberately not named `*-graph`, which `bundle-all` globs)
+      that reads a model JSON and redacts host-identifying data. Nine ops, all default-on,
+      each `--no-<op>`: `ids` (rewrite node ids to opaque `n<i>` + remap edges — ids are
+      never displayed/searched/selector-referenced, so this collision-free move strips the
+      pid/ip/inode embedded in `p:`/`r:`/`s:` ids), `ips` (non-loopback IPv4/IPv6 →
+      placeholder, port kept; loopback-only exemption so private/LAN is still redacted),
+      `hostname` (needle from `meta.host`), `users` (socket `user: NAME (uid N)` regex +
+      structured `user`/`group`/`uid`/`gid` fields + a name-needle sweep that also catches
+      the name embedded elsewhere, e.g. dirtree's `perms user:group` tooltip or a
+      `/home/<user>/…` cmdline path; `root`/uid 0 kept), `pids` (consistent real→fake map,
+      tree stays navigable), `cmdline` (keep argv[0], drop args), `unix-paths` (keep
+      basename, drop dir), `timestamp` (`meta.captured`→`"n/a"`), `inodes`. Format-aware for
+      socket captures (regexes keyed to `sockets-graph`'s `proc_*`/`sock_full` templates —
+      a documented coupling), graceful on any other model. Closes this item.
 - [x] **"Mark" state + "Undirected BFS" static layout for choosing BFS roots** —
       a new `marked` Set, separate from `pinned`, flags selected nodes as layout
       anchors. Deliberately not reusing `pinned`: that's a physics-sim concern
@@ -227,8 +242,6 @@ Check things off as they land.
       Weave Scope is unmaintained since ~2021, so there's room for a modern,
       agentless single-host take. Watch new entrants (e.g. grigio/network-monitor, 2025).
 - [ ] Add a **screenshot / short GIF** to the README.
-- [ ] **Redaction mode**: scrub cmdline args / IP addresses before emitting, for
-      safely sharing the HTML.
 - [ ] Easy install story (download URL / release); shebang + `chmod +x` already work.
 - [ ] `CHANGELOG.md` + version string.
 - [ ] **Document the JSON schema** (`SCHEMA.md`): the generic typed-directed-graph

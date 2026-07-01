@@ -12,6 +12,11 @@ Guidance for AI agents (and humans) working in this repo. **The conventions live
   JSON to stdout and returns on success; `-o`/`--out` reserved; no top-level `Viewer`;
   errors via `SystemExit`. `just bundle` lints these and refuses violations.
 
+Not every script is a generator: **`scrub-model`** is a *filter* (reads a model JSON on
+stdin, writes a scrubbed model to stdout). It's intentionally **not** named `*-graph` —
+`just bundle-all` globs `*-graph` and would try to bundle it as a generator. Filters are
+verb-noun (like `render-graph-html.py`); generators are `{subject}-graph`.
+
 Common tasks: `just bundle <generator>` (or `just bundle-all`) to build a single-file
 bundle into `dist/`; `just format` to run `black`.
 
