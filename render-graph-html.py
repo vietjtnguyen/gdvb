@@ -666,10 +666,19 @@ function undirectedBFS(){
   if(!S.length||!S.some(id=>marked.has(id)))return;
   const inS=new Set(S);
   const layer={},q=[];
-  S.slice().sort((a,b)=>(marked.has(a)?0:1)-(marked.has(b)?0:1)).forEach(r=>{if(layer[r]!==undefined)return;
-    layer[r]=0;q.push(r);
-    while(q.length){const u=q.shift();
-      (ADJ[u]||[]).forEach(w=>{if(inS.has(w)&&layer[w]===undefined){layer[w]=layer[u]+1;q.push(w);}});}});
+  const drain=()=>{while(q.length){const u=q.shift();
+    (ADJ[u]||[]).forEach(w=>{if(inS.has(w)&&layer[w]===undefined){layer[w]=layer[u]+1;q.push(w);}});}};
+  // True multi-source BFS: seed EVERY marked node at layer 0 up front, then flood
+  // once - so each node's layer is its distance to the NEAREST mark, not just to
+  // whichever mark a naive one-at-a-time seeding happened to reach first (that
+  // approach let an earlier mark's flood swallow a later one before it got a
+  // turn as its own root, stranding it at a nonzero layer despite being marked).
+  S.forEach(id=>{if(marked.has(id)){layer[id]=0;q.push(id);}});
+  drain();
+  // Leftover: any part of the selection unreachable from every mark (a separate
+  // component) still needs its own arbitrary seed, same as Topo BFS's
+  // disconnected-component fallback, so nothing is left unplaced.
+  S.forEach(id=>{if(layer[id]===undefined){layer[id]=0;q.push(id);drain();}});
   layoutLayers(S,layer,"undirected BFS");}
 document.getElementById("undirbfs").onclick=undirectedBFS;
 function updateUndirBtn(){const b=document.getElementById("undirbfs");

@@ -131,6 +131,16 @@ Check things off as they land.
       deep, non-root file now puts its parent exactly 1 undirected hop away and
       the real root at a small positive distance, instead of both mark and
       root fighting over layer 0.
+      Second bug (multiple marks): the initial version seeded marks one at a
+      time in sort order, each running a *complete* flood before the next mark
+      got a turn - so a second mark inside the first mark's connected component
+      got swallowed by that flood and ended up at its hop-distance from the
+      *first* mark instead of at layer 0, despite being marked itself. Fixed
+      with a true multi-source BFS: every marked node is seeded at layer 0
+      up front, then flooded once, so each node's layer is its distance to the
+      *nearest* mark. Leftover nodes unreachable from any mark (a separate
+      component) still get their own arbitrary seed afterward. Verified against
+      real data with two marks in the same tree.
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
       Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it
