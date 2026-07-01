@@ -17,6 +17,27 @@ stdin, writes a scrubbed model to stdout). It's intentionally **not** named `*-g
 `just bundle-all` globs `*-graph` and would try to bundle it as a generator. Filters are
 verb-noun (like `render-graph-html.py`); generators are `{subject}-graph`.
 
+**`lsp-graph`** is the other odd one out: a shared LSP-protocol *client*, not a generator
+you'd run directly (see README → *"LSP client vs. server orchestration"*). It takes
+`--connect <unix-socket-path>` and never spawns a server — LSP specifies the message
+protocol, not a transport or how to launch a server with the right project-specific
+flags, so lsp-graph stays server-agnostic by not touching either. `clangd-lsp-graph` /
+`pyright-lsp-graph` are the actual generators: each spawns its server over stdio,
+bridges that to a fresh Unix domain socket, and runs `lsp-graph --connect` pointed at
+it, streaming its JSON straight through **via a pipe read into `sys.stdout.write`, not
+`stdout=None`/inherit** — inherit would hand the child process the real OS file
+descriptor directly, bypassing a bundle's `contextlib.redirect_stdout` capture
+entirely; a bundle also needs `main()` to `return` on success rather than always
+`sys.exit(rc)`, since any `SystemExit` is read as an early/error exit that skips
+rendering. Get both right and they bundle and render correctly (`just bundle
+clangd-lsp-graph` produces a working `dist/clangd-lsp-graph-scope`) — verified by
+actually running the bundled output, not just reasoning about it. They still aren't
+fully self-contained the way other bundles are, though: the bundled artifact needs a
+separate `lsp-graph` reachable at runtime (`PATH`, or copied alongside in `dist/`),
+since they orchestrate it as its own process rather than importing it. Adding a new
+language/server means a new small wrapper script in this same shape; `lsp-graph`
+itself shouldn't need to change.
+
 Common tasks: `just bundle <generator>` (or `just bundle-all`) to build a single-file
 bundle into `dist/`; `just format` to run `black`.
 
