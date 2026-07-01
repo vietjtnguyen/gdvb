@@ -9,6 +9,7 @@ the JSON model is the only contract. Pipe it to the viewer:
 
     lsp-graph <project> --file src/foo.cpp | render-graph-html.py > calls.html
     lsp-graph <project> --seed planPath   | render-graph-html.py > calls.html
+    lsp-graph <project> --all --max-nodes 5000 | render-graph-html.py > calls.html
 
 The graph is built from `callHierarchy/incomingCalls` (who calls X), walking UP
 the call graph from the seeds - the impact-analysis direction ("what breaks if I
@@ -22,6 +23,13 @@ resolves its ancestors/descendants via `textDocument/typeHierarchy` (clangd's
 pre-3.17 extension - clangd 14 doesn't speak the standardized
 prepareTypeHierarchy/supertypes/subtypes trio) into `inherits` edges
 (derived->base), bounded by `--type-depth` hops.
+
+`--all` seeds from every function/type in the project instead of a specific
+--seed/--file: it walks every source file under the project root (documentSymbol,
+not compile_commands.json's TU list, since headers - where most classes live -
+aren't their own translation unit) and adds every callable/type it finds, without
+the `seed` border (marking everything "the seed" is meaningless). Combine with a
+larger --max-nodes; the default (400) truncates quickly on a whole project.
 
 Requires the language server on PATH (clangd >= the call-hierarchy versions) and,
 for clangd, a compile_commands.json. Stdlib only.
@@ -164,11 +172,33 @@ class LSP:
         self._id = 0
         self.index_done = False
         self._index_token = None
+        # clangd 14's typeHierarchy has known crash bugs (segfaults on some real
+        # code - confirmed against orchard/) that take down the whole process, not
+        # just one request. Once that happens, stop writing to the dead pipe and
+        # treat every further request as "no data" instead of raising, so a whole
+        # -project run keeps whatever it already collected rather than crashing.
+        self.crashed = False
+        self._warned = False
+
+    def _warn_crashed(self):
+        if not self._warned:
+            self._warned = True
+            sys.stderr.write(
+                "lsp-graph: warning: the language server exited unexpectedly "
+                "(clangd's typeHierarchy has known crash bugs on some code); "
+                "continuing with what was already collected\n"
+            )
 
     def _frame(self, obj):
+        if self.crashed:
+            return
         body = json.dumps(obj).encode()
-        self.proc.stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            self.crashed = True
+            self._warn_crashed()
 
     def send(self, method, params):
         self._id += 1
@@ -236,10 +266,15 @@ class LSP:
         return "method" in m  # other notifications are noise too
 
     def wait_for(self, rid, timeout=30):
+        if self.crashed:
+            return None
         deadline = time.time() + timeout
         while True:
             m = self._read_msg(deadline)
             if m is None:
+                if self.proc.poll() is not None:
+                    self.crashed = True
+                    self._warn_crashed()
                 return None
             if m.get("id") == rid and "result" in m:
                 return m["result"]
@@ -292,8 +327,53 @@ def _flatten_with_parent(symbols, parent, out):
         _flatten_with_parent(s.get("children"), s, out)
 
 
+_SOURCE_EXTS = (".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".inl")
+# Common vendored-dependency directory names: --all is meant to graph the
+# project's OWN code, and a single vendored header (e.g. a single-header JSON
+# library) can be tens of thousands of lines - scanning it would dominate the
+# runtime and bury the project's own symbols. Not exhaustive (a vendored lib
+# dropped in under an unrecognized name won't be caught) - see --exclude-dir.
+_SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    ".cache",
+    "third_party",
+    "thirdparty",
+    "vendor",
+    "external",
+    "extern",
+    "deps",
+}
+
+
+def discover_source_files(root, extra_skip_dirs=()):
+    """Every C/C++ source/header under `root`, skipping VCS/build/vendor dirs.
+    Used by --all to enumerate what to open+documentSymbol for a whole-project
+    scan - deliberately a directory walk, not compile_commands.json's TU list,
+    since headers (where most classes live) aren't their own compiled TU."""
+    skip = _SKIP_DIRS | set(extra_skip_dirs)
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d for d in dirnames if d not in skip and not d.startswith((".", "build"))
+        ]
+        for fn in filenames:
+            if fn.endswith(_SOURCE_EXTS):
+                out.append(os.path.join(dirpath, fn))
+    return sorted(out)
+
+
 def build_callgraph(
-    lsp, root, seed_names, seed_files, depth, max_nodes, index_timeout, type_depth
+    lsp,
+    root,
+    seed_names,
+    seed_files,
+    seed_all,
+    exclude_dirs,
+    depth,
+    max_nodes,
+    index_timeout,
+    type_depth,
 ):
     opened = set()
 
@@ -338,12 +418,16 @@ def build_callgraph(
     # ---- type containment (documentSymbol) + inheritance (typeHierarchy) ----
     scanned_files = set()
     container_map = {}  # member itemkey -> (parent symbol dict, uri)
+    discovered = []  # (symbol, uri) for every callable/type seen - --all seeding
+    pending_type_expansion = []  # (node, sym, uri) - typeHierarchy calls, deferred
 
     def scan_file(path):
         """Cache the file's containment structure: for every method/ctor/function
         nested under a class/struct/interface/enum, remember its owner. clangd's
         CallHierarchyItem carries no parent-symbol info, so this is the only way
-        to recover "what type does this callable belong to"."""
+        to recover "what type does this callable belong to". Also records every
+        callable/type symbol seen into `discovered`, for --all's whole-project
+        seeding (a no-op list when --all isn't requested)."""
         if path in scanned_files or not os.path.exists(path):
             return
         scanned_files.add(path)
@@ -356,9 +440,12 @@ def build_callgraph(
             pairs,
         )
         for sym, parent in pairs:
+            kind = sym.get("kind")
+            if kind in KIND_CLASS or kind in TYPE_KIND_CLASS:
+                discovered.append((sym, uri))
             if (
                 parent is not None
-                and sym.get("kind") in KIND_CLASS
+                and kind in KIND_CLASS
                 and parent.get("kind") in TYPE_KIND_CLASS
             ):
                 s = sym["selectionRange"]["start"]
@@ -380,8 +467,12 @@ def build_callgraph(
             "classes": cls,
         }
         nodes[key] = node
-        if len(nodes) < max_nodes:
-            expand_type_hierarchy(node, sym, uri)
+        # Deferred, not called here: typeHierarchy is an RPC that clangd 14 is
+        # known to crash on for some real code (confirmed against orchard/), and
+        # a crash takes down the whole process. Running every expansion only
+        # after the call graph (the primary output) is fully built means a crash
+        # here can only cost inheritance edges, never already-collected calls.
+        pending_type_expansion.append((node, sym, uri))
         return node
 
     def expand_type_hierarchy(node, sym, uri):
@@ -520,14 +611,50 @@ def build_callgraph(
             )
             seeds.extend(items or [])
 
-    if not seeds:
-        raise SystemExit("lsp-graph: no seed symbols resolved (check --seed/--file)")
+    # --all: open+documentSymbol every source file under the project, adding every
+    # callable as a bulk (unmarked) BFS start and every type directly (so a bare
+    # enum/struct with no methods still gets a node, not just incidental ones
+    # discovered via containment).
+    bulk_items = []
+    if seed_all:
+        files = discover_source_files(root, exclude_dirs)
+        sys.stderr.write(
+            "lsp-graph: --all: scanning %d source file(s)...\n" % len(files)
+        )
+        for path in files:
+            scan_file(path)
+        for sym, uri in discovered:
+            kind = sym.get("kind")
+            if kind in KIND_CLASS:
+                bulk_items.append(
+                    {
+                        "uri": uri,
+                        "name": sym["name"],
+                        "kind": kind,
+                        "selectionRange": sym["selectionRange"],
+                    }
+                )
+            elif kind in TYPE_KIND_CLASS:
+                type_node_for(sym, uri)
 
-    # BFS up the caller graph via incomingCalls.
+    if not seeds and not bulk_items:
+        raise SystemExit(
+            "lsp-graph: no seed symbols resolved (check --seed/--file/--all)"
+        )
+
+    # BFS up the caller graph via incomingCalls. Explicit seeds get the red
+    # "seed" border; --all's bulk items don't (marking every symbol in the
+    # project as "the seed" would be meaningless noise).
     queue = []
     visited = set()
     for it in seeds:
         node_for(it, seed=True)
+        k = itemkey(it)
+        if k not in visited:
+            visited.add(k)
+            queue.append((it, 0))
+    for it in bulk_items:
+        node_for(it, seed=False)
         k = itemkey(it)
         if k not in visited:
             visited.add(k)
@@ -557,6 +684,14 @@ def build_callgraph(
             if k not in visited and len(nodes) < max_nodes:
                 visited.add(k)
                 queue.append((frm, d + 1))
+
+    # Now that the call graph is fully built, resolve every type's ancestors/
+    # descendants. Deferred to last (see type_node_for) so a typeHierarchy crash
+    # can only truncate inherits edges, not the call graph above.
+    for node, sym, uri in pending_type_expansion:
+        if len(nodes) >= max_nodes:
+            break
+        expand_type_hierarchy(node, sym, uri)
 
     truncated = bool(queue) or len(nodes) >= max_nodes
     return list(nodes.values()), list(edges.values()), truncated
@@ -615,6 +750,7 @@ def main():
             "examples:\n"
             "  lsp-graph proj --file src/foo.cpp | render-graph-html.py > calls.html\n"
             "  lsp-graph proj --seed planPath --depth 4 | render-graph-html.py\n"
+            "  lsp-graph proj --all --max-nodes 5000 | render-graph-html.py\n"
         ),
     )
     ap.add_argument(
@@ -634,6 +770,21 @@ def main():
         default=[],
         metavar="PATH",
         help="seed from every function in PATH; repeatable",
+    )
+    ap.add_argument(
+        "--all",
+        action="store_true",
+        help="seed from every function/type in the project (walks every source "
+        "file's documentSymbol) for a whole-project graph; combine with a "
+        "larger --max-nodes",
+    )
+    ap.add_argument(
+        "--exclude-dir",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="with --all, also skip this directory name (repeatable); "
+        "third_party/vendor/etc. are already skipped by default",
     )
     ap.add_argument(
         "--depth",
@@ -680,8 +831,8 @@ def main():
     project = os.path.abspath(args.project)
     if not os.path.isdir(project):
         ap.error("not a directory: %s" % args.project)
-    if not args.seed and not args.file:
-        ap.error("give at least one --seed NAME or --file PATH")
+    if not args.seed and not args.file and not args.all:
+        ap.error("give at least one --seed NAME, --file PATH, or --all")
 
     cmd = [args.server]
     if "clangd" in os.path.basename(args.server):
@@ -725,6 +876,8 @@ def main():
             project,
             args.seed,
             seed_files,
+            args.all,
+            args.exclude_dir,
             args.depth,
             args.max_nodes,
             args.index_timeout,
@@ -733,7 +886,10 @@ def main():
     finally:
         lsp.shutdown()
 
-    seeds_desc = ", ".join(args.seed + [os.path.basename(p) for p in args.file]) or "?"
+    seeds_desc = ", ".join(args.seed + [os.path.basename(p) for p in args.file])
+    if args.all:
+        seeds_desc = (seeds_desc + ", " if seeds_desc else "") + "whole project (--all)"
+    seeds_desc = seeds_desc or "?"
     model = assemble(nodes, edges, project, seeds_desc, truncated)
     json.dump(model, sys.stdout, ensure_ascii=False, indent=2)
     sys.stdout.write("\n")

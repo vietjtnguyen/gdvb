@@ -85,7 +85,7 @@ Check things off as they land.
       outgoingCalls returns empty), and clangd starts indexing only after the first
       `didOpen` — both handled. Verified against `orchard/`.
       Future modes (still open): reference graphs; `--direction` once a server supports
-      outgoingCalls; whole-project `--all`; other servers via `--server`.
+      outgoingCalls; other servers via `--server`.
 - [x] **"Show all" / "Hide all" buttons** on each legend (node classes / edge
       classes) — bulk-set every class in that legend in one click instead of
       per-row toggling; single `applyVis()`/`reheat()` for the whole batch.
@@ -178,6 +178,25 @@ Check things off as they land.
       because clangd's nested resolution only continues in the direction that
       reached each node (ancestors resolve further ancestors; it doesn't cross
       over to enumerate a common base's other descendants).
+- [x] **`lsp-graph --all`: whole-project seeding.** Seeds from every function/
+      type in the project instead of a specific `--seed`/`--file`: walks every
+      source file under the project root (`discover_source_files` - a directory
+      walk, not `compile_commands.json`'s TU list, since headers - where most
+      classes live - aren't their own translation unit), documentSymbol's each
+      one, and adds every callable/type found (callables unmarked - marking
+      everything "the seed" is meaningless noise). Skips common vendored-dep
+      directory names by default (`third_party`/`vendor`/`external`/…) plus a
+      user `--exclude-dir`, since a single vendored header can be tens of
+      thousands of lines and would dominate the scan and bury the project's
+      own symbols. Also hardened the LSP client for this: **clangd 14's
+      `typeHierarchy` has a real crash bug** (segfaults on certain real code -
+      confirmed against `orchard/`, not our bug) that kills the whole
+      subprocess, not just one request. `LSP` now catches the broken pipe,
+      marks itself `crashed`, and treats every further request as "no data"
+      instead of raising - so a run degrades to a partial graph with a
+      stderr warning instead of crashing. Also reordered type-hierarchy
+      expansion to run only *after* the call graph is fully built, so a
+      typeHierarchy crash can cost inheritance edges but never the calls.
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
       Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it
@@ -212,19 +231,6 @@ Check things off as they land.
       generation time — deconflicting the id namespace is only one small part
       of the actual stitching problem, so solve them together rather than
       pre-committing to an id scheme now.
-- [ ] **`lsp-graph`: types as first-class nodes** — currently only functions/
-      methods/constructors (SymbolKind restricted to the call-hierarchy kinds)
-      are emitted; classes/structs/enums/etc. should appear as their own class
-      of node (distinct from the `seed` modifier border), with edges for
-      containment/usage, not just calls. Ties into clangd's `typeHierarchy/*`
-      requests, separate from `callHierarchy/incomingCalls`.
-- [ ] **`lsp-graph`: whole-project symbol enumeration** — a mode to seed from
-      *every* first-class type/symbol in the project (e.g. `workspace/symbol`
-      with an empty/wildcard query, or walking `textDocument/documentSymbol`
-      across all indexed files) instead of requiring `--file`/`--seed` up
-      front, so you can explore a codebase without already knowing a starting
-      point. Distinct from the types-as-nodes item above — this is about seed
-      *discovery*, not node *kind*.
 
 ## Viewer / UX
 
