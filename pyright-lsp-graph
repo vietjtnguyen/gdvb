@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""pyright-lsp-graph - emit a symbol call graph for a Python project via pyright.
+
+A standalone generator for the socketscope viewer. It is NOT a persistent server:
+it spins up pyright's language server just long enough to answer lsp-graph's
+queries, then exits. Concretely: (1) spawn `pyright-langserver --stdio` (pyright
+speaks stdio, node-ipc, or a TCP socket - stdio is the simplest to bridge
+generically), (2) bridge that stdio to a fresh Unix domain socket, since
+lsp-graph is a transport-agnostic LSP client that expects to connect to one (see
+lsp-graph's own docstring for why that split exists), (3) run lsp-graph with the
+same arguments plus --connect pointed at the socket, streaming its stdout - the
+JSON model - through as this script's own stdout, (4) tear everything down. Pipe
+the result to render-graph-html.py, same as any generator:
+
+    pyright-lsp-graph <project> --file foo.py | render-graph-html.py > calls.html
+    pyright-lsp-graph <project> --seed plan_path --depth 4 | render-graph-html.py
+    pyright-lsp-graph <project> --all --direction both --max-nodes 5000 | render-graph-html.py
+
+pyright fully implements BOTH call-hierarchy directions (unlike clangd 14), so
+--direction out/both are meaningful here. It does NOT implement type hierarchy at
+all - lsp-graph detects that from the server's own capabilities and skips it, no
+flag needed.
+
+All lsp-graph flags (--seed/--file/--all/--exclude-dir/--depth/--direction/
+--max-nodes/--type-depth/--index-timeout) pass straight through untouched - run
+`lsp-graph --help` for those. This script only adds --pyright-langserver (the
+executable to run). Stdlib only; requires `pyright` installed separately (e.g.
+`pip install pyright` or `npm install -g pyright`) - it wraps a Node-based server.
+"""
+import os
+import sys
+import shutil
+import socket
+import argparse
+import tempfile
+import threading
+import subprocess
+
+BUFSZ = 4096
+
+
+def find_lsp_graph():
+    on_path = shutil.which("lsp-graph")
+    if on_path:
+        return [on_path]
+    sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lsp-graph")
+    if os.path.exists(sibling):
+        return [sys.executable, sibling]
+    raise SystemExit(
+        "pyright-lsp-graph: cannot find lsp-graph (not on PATH, not next to this script)"
+    )
+
+
+def _pipe_to_sock(pipe, conn):
+    try:
+        while True:
+            data = pipe.read(BUFSZ)
+            if not data:
+                break
+            conn.sendall(data)
+    except OSError:
+        pass
+    finally:
+        try:
+            conn.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+def _sock_to_pipe(conn, pipe):
+    try:
+        while True:
+            data = conn.recv(BUFSZ)
+            if not data:
+                break
+            pipe.write(data)
+            pipe.flush()
+    except OSError:
+        pass
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="pyright-lsp-graph",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Run pyright-langserver just long enough to answer lsp-graph's\n"
+            "queries for a Python project, then exit. Pipe to: render-graph-html.py"
+        ),
+        epilog=(
+            "examples:\n"
+            "  pyright-lsp-graph proj --file foo.py | render-graph-html.py > c.html\n"
+            "  pyright-lsp-graph proj --seed plan_path --depth 4 | render-graph-html.py\n"
+            "  pyright-lsp-graph proj --all --direction both | render-graph-html.py\n"
+            "\nall other flags (--seed/--file/--all/--depth/...) pass through to\n"
+            "lsp-graph unchanged - see `lsp-graph --help`."
+        ),
+    )
+    ap.add_argument("project", help="project root")
+    ap.add_argument(
+        "--pyright-langserver",
+        default="pyright-langserver",
+        metavar="CMD",
+        help="pyright-langserver executable (default: pyright-langserver)",
+    )
+    args, rest = ap.parse_known_args()
+
+    project = os.path.abspath(args.project)
+    if not os.path.isdir(project):
+        raise SystemExit("pyright-lsp-graph: not a directory: %s" % args.project)
+
+    cmd = [args.pyright_langserver, "--stdio"]
+    lsp_graph_cmd = find_lsp_graph()
+
+    try:
+        server = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+    except FileNotFoundError:
+        raise SystemExit(
+            "pyright-lsp-graph: pyright-langserver not found: %s "
+            "(pip install pyright)" % cmd[0]
+        )
+
+    tmpdir = tempfile.mkdtemp(prefix="pyright-lsp-graph-")
+    sock_path = os.path.join(tmpdir, "lsp.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    rc = 1
+    try:
+        listener.bind(sock_path)
+        listener.listen(1)
+
+        client = subprocess.Popen(
+            lsp_graph_cmd + [project, "--connect", sock_path] + rest,
+            stdout=subprocess.PIPE,
+        )
+
+        listener.settimeout(30)
+        try:
+            conn, _ = listener.accept()
+        except socket.timeout:
+            client.terminate()
+            raise SystemExit(
+                "pyright-lsp-graph: lsp-graph never connected to the socket"
+            )
+
+        threads = [
+            threading.Thread(
+                target=_pipe_to_sock, args=(server.stdout, conn), daemon=True
+            ),
+            threading.Thread(
+                target=_sock_to_pipe, args=(conn, server.stdin), daemon=True
+            ),
+        ]
+        for t in threads:
+            t.start()
+
+        # Piped and relayed through sys.stdout here (not stdout=None/inherit):
+        # inherit would hand lsp-graph the real OS fd 1 directly, bypassing
+        # contextlib.redirect_stdout entirely - which is exactly what a bundled
+        # build needs to capture the model JSON to render it. lsp-graph writes
+        # its model once, at the very end, so a single blocking read is exact.
+        output = client.stdout.read()
+        rc = client.wait()
+        conn.close()
+    finally:
+        server.terminate()
+        listener.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    sys.stdout.write(output.decode("utf-8", "replace"))
+    if rc != 0:
+        sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()

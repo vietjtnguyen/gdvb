@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""clangd-lsp-graph - emit a symbol call graph for a C/C++ project via clangd.
+
+A standalone generator for the socketscope viewer. It is NOT a persistent server:
+it spins up clangd just long enough to answer lsp-graph's queries, then exits.
+Concretely: (1) autodetect compile_commands.json under the project (or
+<project>/build*), (2) spawn clangd over its own stdio (clangd only speaks stdio -
+no socket mode), (3) bridge that stdio to a fresh Unix domain socket, since
+lsp-graph is a transport-agnostic LSP client that expects to connect to one (see
+lsp-graph's own docstring for why that split exists), (4) run lsp-graph with the
+same arguments plus --connect pointed at the socket, streaming its stdout - the
+JSON model - through as this script's own stdout, (5) tear everything down. Pipe
+the result to render-graph-html.py, same as any generator:
+
+    clangd-lsp-graph <project> --file src/foo.cpp | render-graph-html.py > calls.html
+    clangd-lsp-graph <project> --seed planPath --depth 4 | render-graph-html.py
+    clangd-lsp-graph <project> --all --max-nodes 5000 | render-graph-html.py
+
+All lsp-graph flags (--seed/--file/--all/--exclude-dir/--depth/--direction/
+--max-nodes/--type-depth/--index-timeout) pass straight through untouched - run
+`lsp-graph --help` for those. This script only adds --compile-commands and
+--clangd (the executable to run). Stdlib only.
+"""
+import os
+import sys
+import glob
+import shutil
+import socket
+import argparse
+import tempfile
+import threading
+import subprocess
+
+BUFSZ = 4096
+
+
+def find_compile_commands(project, override):
+    if override:
+        return override
+    if os.path.exists(os.path.join(project, "compile_commands.json")):
+        return project
+    for d in sorted(glob.glob(os.path.join(project, "build*"))):
+        if os.path.exists(os.path.join(d, "compile_commands.json")):
+            return d
+    return None
+
+
+def find_lsp_graph():
+    on_path = shutil.which("lsp-graph")
+    if on_path:
+        return [on_path]
+    sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lsp-graph")
+    if os.path.exists(sibling):
+        return [sys.executable, sibling]
+    raise SystemExit(
+        "clangd-lsp-graph: cannot find lsp-graph (not on PATH, not next to this script)"
+    )
+
+
+def _pipe_to_sock(pipe, conn):
+    try:
+        while True:
+            data = pipe.read(BUFSZ)
+            if not data:
+                break
+            conn.sendall(data)
+    except OSError:
+        pass
+    finally:
+        try:
+            conn.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+
+def _sock_to_pipe(conn, pipe):
+    try:
+        while True:
+            data = conn.recv(BUFSZ)
+            if not data:
+                break
+            pipe.write(data)
+            pipe.flush()
+    except OSError:
+        pass
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="clangd-lsp-graph",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Run clangd just long enough to answer lsp-graph's queries for a\n"
+            "C/C++ project, then exit. Pipe to: render-graph-html.py"
+        ),
+        epilog=(
+            "examples:\n"
+            "  clangd-lsp-graph proj --file src/foo.cpp | render-graph-html.py > c.html\n"
+            "  clangd-lsp-graph proj --seed planPath --depth 4 | render-graph-html.py\n"
+            "  clangd-lsp-graph proj --all --max-nodes 5000 | render-graph-html.py\n"
+            "\nall other flags (--seed/--file/--all/--depth/...) pass through to\n"
+            "lsp-graph unchanged - see `lsp-graph --help`."
+        ),
+    )
+    ap.add_argument("project", help="project root")
+    ap.add_argument(
+        "--compile-commands",
+        default=None,
+        metavar="DIR",
+        help="dir with compile_commands.json (default: autodetect under the project)",
+    )
+    ap.add_argument(
+        "--clangd",
+        default="clangd",
+        metavar="CMD",
+        help="clangd executable (default: clangd)",
+    )
+    args, rest = ap.parse_known_args()
+
+    project = os.path.abspath(args.project)
+    if not os.path.isdir(project):
+        raise SystemExit("clangd-lsp-graph: not a directory: %s" % args.project)
+
+    cc = find_compile_commands(project, args.compile_commands)
+    cmd = [args.clangd, "--background-index", "--log=error"]
+    if cc:
+        cmd.append("--compile-commands-dir=" + cc)
+    else:
+        sys.stderr.write(
+            "clangd-lsp-graph: warning: no compile_commands.json found under %s\n"
+            % project
+        )
+
+    lsp_graph_cmd = find_lsp_graph()
+
+    try:
+        server = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+    except FileNotFoundError:
+        raise SystemExit("clangd-lsp-graph: clangd not found: %s" % cmd[0])
+
+    tmpdir = tempfile.mkdtemp(prefix="clangd-lsp-graph-")
+    sock_path = os.path.join(tmpdir, "lsp.sock")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    rc = 1
+    try:
+        listener.bind(sock_path)
+        listener.listen(1)
+
+        client = subprocess.Popen(
+            lsp_graph_cmd + [project, "--connect", sock_path] + rest,
+            stdout=subprocess.PIPE,
+        )
+
+        listener.settimeout(30)
+        try:
+            conn, _ = listener.accept()
+        except socket.timeout:
+            client.terminate()
+            raise SystemExit(
+                "clangd-lsp-graph: lsp-graph never connected to the socket"
+            )
+
+        threads = [
+            threading.Thread(
+                target=_pipe_to_sock, args=(server.stdout, conn), daemon=True
+            ),
+            threading.Thread(
+                target=_sock_to_pipe, args=(conn, server.stdin), daemon=True
+            ),
+        ]
+        for t in threads:
+            t.start()
+
+        # Piped and relayed through sys.stdout here (not stdout=None/inherit):
+        # inherit would hand lsp-graph the real OS fd 1 directly, bypassing
+        # contextlib.redirect_stdout entirely - which is exactly what a bundled
+        # build needs to capture the model JSON to render it. lsp-graph writes
+        # its model once, at the very end, so a single blocking read is exact.
+        output = client.stdout.read()
+        rc = client.wait()
+        conn.close()
+    finally:
+        server.terminate()
+        listener.close()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    sys.stdout.write(output.decode("utf-8", "replace"))
+    if rc != 0:
+        sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()

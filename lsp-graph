@@ -1,49 +1,64 @@
 #!/usr/bin/env python3
 """lsp-graph - emit a symbol call graph from a language server, as JSON.
 
-A standalone generator for the socketscope viewer. It drives a language server
-(clangd by default) over stdio JSON-RPC, walks the CALL HIERARCHY outward from
-one or more seed symbols, and prints ONE JSON graph model to stdout - the same
-generic model the other generators produce. It does NOT import render-graph-html.py;
-the JSON model is the only contract. Pipe it to the viewer:
+A standalone LSP CLIENT for the socketscope viewer: it speaks JSON-RPC over an
+already-connected duplex byte stream to WHATEVER language server is on the other
+end, walks the CALL HIERARCHY outward from one or more seed symbols, and prints
+ONE JSON graph model to stdout - the same generic model the other generators
+produce. It does NOT import render-graph-html.py; the JSON model is the only
+contract.
 
-    lsp-graph <project> --file src/foo.cpp | render-graph-html.py > calls.html
-    lsp-graph <project> --seed planPath   | render-graph-html.py > calls.html
-    lsp-graph <project> --all --max-nodes 5000 | render-graph-html.py > calls.html
+lsp-graph does not know how to start a language server, and deliberately so: LSP
+only specifies the JSON-RPC message protocol, not a transport - servers each pick
+their own (stdio-only, a TCP/Unix socket, node-ipc, ...), and getting one running
+with the right flags (a C++ project's compile_commands.json, a Python venv, ...)
+is a different problem from turning its responses into a graph. That's the job of
+a per-server GENERATOR wrapper (e.g. `clangd-lsp-graph`, `pyright-lsp-graph`):
+each spins up its server, bridges it to a Unix domain socket, and calls this with
+--connect pointed at it - lsp-graph itself never spawns a process. Use those
+wrappers directly; only reach for lsp-graph --connect yourself if you already have
+a server listening on a socket some other way.
 
-The graph is built from `callHierarchy/incomingCalls` (who calls X), walking UP
-the call graph from the seeds - the impact-analysis direction ("what breaks if I
-change this"). Edges are directed caller->callee, so the viewer navigates either
-way. (clangd 14 doesn't implement outgoingCalls; callers are what's available.)
+    clangd-lsp-graph <project> --file src/foo.cpp | render-graph-html.py > calls.html
+    pyright-lsp-graph <project> --all --max-nodes 5000 | render-graph-html.py > c.html
+    lsp-graph <project> --connect /tmp/lsp.sock --seed planPath   # low-level, direct
+
+The graph is built from `callHierarchy/incomingCalls` (who calls X) by default,
+walking UP the call graph from the seeds - the impact-analysis direction ("what
+breaks if I change this"). Edges are directed caller->callee, so the viewer
+navigates either way. `--direction out`/`both` also walks `outgoingCalls` for
+servers that implement it (clangd 14 doesn't - it always returns empty there, a
+harmless no-op; pyright implements both directions fully).
 
 Every method/constructor discovered also pulls in its OWNING TYPE (class/struct/
 interface/enum) as a first-class node, via `textDocument/documentSymbol`
 containment - a `member-of` edge from the callable to its type. Each type then
-resolves its ancestors/descendants via `textDocument/typeHierarchy` (clangd's
-pre-3.17 extension - clangd 14 doesn't speak the standardized
-prepareTypeHierarchy/supertypes/subtypes trio) into `inherits` edges
-(derived->base), bounded by `--type-depth` hops.
+resolves its ancestors/descendants via typeHierarchy into `inherits` edges
+(derived->base), bounded by `--type-depth` hops - tried via the standardized LSP
+3.17 prepareTypeHierarchy/supertypes/subtypes trio first, falling back to
+clangd's older pre-standardization extension; skipped entirely if the server
+never advertised typeHierarchyProvider at all (e.g. pyright, which only
+implements call hierarchy).
 
 `--all` seeds from every function/type in the project instead of a specific
 --seed/--file: it walks every source file under the project root (documentSymbol,
-not compile_commands.json's TU list, since headers - where most classes live -
-aren't their own translation unit) and adds every callable/type it finds, without
-the `seed` border (marking everything "the seed" is meaningless). Combine with a
-larger --max-nodes; the default (400) truncates quickly on a whole project.
+not e.g. a C++ compile_commands.json's TU list, since headers - where most
+classes live - aren't their own translation unit) and adds every callable/type it
+finds, without the `seed` border (marking everything "the seed" is meaningless).
+Combine with a larger --max-nodes; the default (400) truncates quickly on a whole
+project. Source-file discovery is by extension (see LANG_BY_EXT) plus a shebang
+sniff for extensionless scripts (this project's own convention).
 
-Requires the language server on PATH (clangd >= the call-hierarchy versions) and,
-for clangd, a compile_commands.json. Stdlib only.
+Stdlib only.
 """
 import os
 import sys
-import glob
 import json
 import time
 import select
 import socket
 import argparse
 import datetime
-import subprocess
 
 # LSP SymbolKind -> our node class, for the callables the call-hierarchy walk seeds
 # from and returns.
@@ -155,28 +170,24 @@ FORCE_STRUCTURES = [
 
 
 # ---------------------------------------------------------------------------
-# Minimal LSP client over a server's stdio (JSON-RPC, Content-Length framing)
+# Minimal LSP client over an already-connected duplex socket (JSON-RPC,
+# Content-Length framing). lsp-graph never spawns the server itself - see the
+# module docstring for why that's a wrapper's job, not this file's.
 # ---------------------------------------------------------------------------
 class LSP:
-    def __init__(self, cmd):
-        try:
-            self.proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                bufsize=0,
-            )
-        except FileNotFoundError:
-            raise SystemExit("lsp-graph: language server not found: %s" % cmd[0])
+    def __init__(self, sock):
+        self.sock = sock
         self._id = 0
-        self.index_done = False
-        self._index_token = None
+        # Some servers (clangd) report indexing progress via $/progress; others
+        # may report none at all. Track activity generically (see wait_for_ready)
+        # rather than assuming any one server's specific progress-token shape.
+        self._last_progress = None
         # clangd 14's typeHierarchy has known crash bugs (segfaults on some real
         # code - confirmed against orchard/) that take down the whole process, not
-        # just one request. Once that happens, stop writing to the dead pipe and
-        # treat every further request as "no data" instead of raising, so a whole
-        # -project run keeps whatever it already collected rather than crashing.
+        # just one request. Once that happens (the socket errors/closes), stop
+        # writing and treat every further request as "no data" instead of
+        # raising, so a whole-project run keeps whatever it already collected
+        # rather than crashing.
         self.crashed = False
         self._warned = False
 
@@ -184,9 +195,10 @@ class LSP:
         if not self._warned:
             self._warned = True
             sys.stderr.write(
-                "lsp-graph: warning: the language server exited unexpectedly "
-                "(clangd's typeHierarchy has known crash bugs on some code); "
-                "continuing with what was already collected\n"
+                "lsp-graph: warning: the language server connection closed "
+                "unexpectedly (some servers, e.g. clangd's typeHierarchy, have "
+                "known crash bugs on certain code); continuing with what was "
+                "already collected\n"
             )
 
     def _frame(self, obj):
@@ -194,9 +206,8 @@ class LSP:
             return
         body = json.dumps(obj).encode()
         try:
-            self.proc.stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
-            self.proc.stdin.flush()
-        except (BrokenPipeError, OSError):
+            self.sock.sendall(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+        except OSError:
             self.crashed = True
             self._warn_crashed()
 
@@ -210,20 +221,33 @@ class LSP:
     def notify(self, method, params):
         self._frame({"jsonrpc": "2.0", "method": method, "params": params})
 
-    def _read_msg(self, deadline):
+    def _recv(self, n, deadline):
+        """Read exactly n bytes, or None on timeout/EOF/error."""
         buf = b""
-        while b"\r\n\r\n" not in buf:
+        while len(buf) < n:
             if time.time() > deadline:
                 return None
-            r, _, _ = select.select(
-                [self.proc.stdout], [], [], max(0, deadline - time.time())
-            )
+            r, _, _ = select.select([self.sock], [], [], max(0, deadline - time.time()))
             if not r:
                 return None
-            c = self.proc.stdout.read(1)
-            if not c:
+            try:
+                chunk = self.sock.recv(n - len(buf))
+            except OSError:
                 return None
-            buf += c
+            if not chunk:
+                return None
+            buf += chunk
+        return buf
+
+    def _read_msg(self, deadline):
+        if self.crashed:
+            return None
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            got = self._recv(1, deadline)
+            if got is None:
+                return None
+            buf += got
         header, rest = buf.split(b"\r\n\r\n", 1)
         n = int(
             dict(
@@ -231,18 +255,10 @@ class LSP:
             )[b"Content-Length"]
         )
         body = rest
-        while len(body) < n:
-            if time.time() > deadline:
-                return None
-            r, _, _ = select.select(
-                [self.proc.stdout], [], [], max(0, deadline - time.time())
-            )
-            if not r:
-                return None
-            chunk = self.proc.stdout.read(n - len(body))
-            if not chunk:
-                return None
-            body += chunk
+        remaining = self._recv(n - len(rest), deadline) if n > len(rest) else b""
+        if remaining is None:
+            return None
+        body += remaining
         return json.loads(body)
 
     def _handle(self, m):
@@ -253,15 +269,7 @@ class LSP:
             self._frame({"jsonrpc": "2.0", "id": m["id"], "result": res})
             return True
         if m.get("method") == "$/progress":
-            v = m.get("params", {}).get("value", {})
-            tok = m.get("params", {}).get("token")
-            # clangd starts its (one) background-index progress once a file is
-            # opened. Latch the first begin as the index token and complete only
-            # on that token's end, so a stray task can't end the wait early.
-            if v.get("kind") == "begin" and self._index_token is None:
-                self._index_token = tok
-            elif v.get("kind") == "end" and tok == self._index_token:
-                self.index_done = True
+            self._last_progress = time.time()
             return True
         return "method" in m  # other notifications are noise too
 
@@ -272,7 +280,7 @@ class LSP:
         while True:
             m = self._read_msg(deadline)
             if m is None:
-                if self.proc.poll() is not None:
+                if not self.crashed:
                     self.crashed = True
                     self._warn_crashed()
                 return None
@@ -285,15 +293,26 @@ class LSP:
     def request(self, method, params, timeout=30):
         return self.wait_for(self.send(method, params), timeout)
 
-    def pump(self, seconds, until_index=False):
-        deadline = time.time() + seconds
+    def wait_for_ready(self, total_timeout, quiet=2.0):
+        """Generic index-warmup wait: after opening the files it's about to
+        query, a client has no portable way to know when a server's background
+        indexing (if any) has settled - LSP's $/progress carries no server-
+        agnostic "this is THE index task" marker. So: pump messages, and stop
+        once `quiet` seconds pass with no new $/progress activity (covers
+        servers that report progress, e.g. clangd), falling back to the flat
+        `total_timeout` if the server never reports any progress at all."""
+        deadline = time.time() + total_timeout
+        self._last_progress = None
+        quiet_until = time.time() + quiet
         while time.time() < deadline:
-            m = self._read_msg(deadline)
+            m = self._read_msg(min(quiet_until, deadline))
             if m is None:
-                break
+                if time.time() >= quiet_until:
+                    return
+                continue
             self._handle(m)
-            if until_index and self.index_done:
-                break
+            if self._last_progress is not None:
+                quiet_until = self._last_progress + quiet
 
     def shutdown(self):
         try:
@@ -301,7 +320,10 @@ class LSP:
             self.notify("exit", {})
         except Exception:
             pass
-        self.proc.terminate()
+        try:
+            self.sock.close()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +349,55 @@ def _flatten_with_parent(symbols, parent, out):
         _flatten_with_parent(s.get("children"), s, out)
 
 
-_SOURCE_EXTS = (".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".inl")
+# File extension -> LSP languageId. lsp-graph is LSP-generic (any server speaking
+# textDocument/documentSymbol + callHierarchy works); this table is what lets
+# --all and didOpen work across languages instead of assuming C++.
+LANG_BY_EXT = {
+    ".c": "c",
+    ".h": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".inl": "cpp",
+    ".py": "python",
+    ".pyi": "python",
+    ".go": "go",
+    ".rs": "rust",
+    ".ts": "typescript",
+    ".tsx": "typescriptreact",
+    ".js": "javascript",
+    ".jsx": "javascriptreact",
+    ".java": "java",
+}
+_SOURCE_EXTS = tuple(LANG_BY_EXT)
+
+
+def _shebang_lang(path):
+    """For an extensionless script (this project's OWN convention: kebab-case,
+    no .py - see lsp-graph itself), sniff the shebang for a known interpreter,
+    since extension-based language_id() has nothing to go on."""
+    try:
+        with open(path, "rb") as fh:
+            first = fh.readline(200)
+    except OSError:
+        return None
+    if not first.startswith(b"#!"):
+        return None
+    first = first.decode("utf-8", "replace")
+    if "python" in first:
+        return "python"
+    return None
+
+
+def language_id(path):
+    ext = os.path.splitext(path)[1]
+    if ext in LANG_BY_EXT:
+        return LANG_BY_EXT[ext]
+    return _shebang_lang(path) or "plaintext"
+
+
 # Common vendored-dependency directory names: --all is meant to graph the
 # project's OWN code, and a single vendored header (e.g. a single-header JSON
 # library) can be tens of thousands of lines - scanning it would dominate the
@@ -347,10 +417,12 @@ _SKIP_DIRS = {
 
 
 def discover_source_files(root, extra_skip_dirs=()):
-    """Every C/C++ source/header under `root`, skipping VCS/build/vendor dirs.
-    Used by --all to enumerate what to open+documentSymbol for a whole-project
-    scan - deliberately a directory walk, not compile_commands.json's TU list,
-    since headers (where most classes live) aren't their own compiled TU."""
+    """Every known-language source/header under `root`, skipping VCS/build/
+    vendor dirs. Used by --all to enumerate what to open+documentSymbol for a
+    whole-project scan - deliberately a directory walk, not e.g.
+    compile_commands.json's TU list, since headers (where most C++ classes
+    live) aren't their own compiled TU. Extensionless scripts with a
+    recognized shebang are included too (this project's own convention)."""
     skip = _SKIP_DIRS | set(extra_skip_dirs)
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
@@ -358,8 +430,11 @@ def discover_source_files(root, extra_skip_dirs=()):
             d for d in dirnames if d not in skip and not d.startswith((".", "build"))
         ]
         for fn in filenames:
+            path = os.path.join(dirpath, fn)
             if fn.endswith(_SOURCE_EXTS):
-                out.append(os.path.join(dirpath, fn))
+                out.append(path)
+            elif "." not in fn and _shebang_lang(path):
+                out.append(path)
     return sorted(out)
 
 
@@ -370,10 +445,12 @@ def build_callgraph(
     seed_files,
     seed_all,
     exclude_dirs,
+    direction,
     depth,
     max_nodes,
     index_timeout,
     type_depth,
+    has_type_hierarchy,
 ):
     opened = set()
 
@@ -387,25 +464,25 @@ def build_callgraph(
             {
                 "textDocument": {
                     "uri": _uri(path),
-                    "languageId": "cpp",
+                    "languageId": language_id(path),
                     "version": 1,
                     "text": text,
                 }
             },
         )
 
-    # clangd only starts its background index once a file is open. Open the seed
-    # files first (for --seed-only runs, open any project source as a kick) so
-    # indexing begins, THEN wait for it -- call hierarchy needs the index.
+    # Some servers (clangd) only start background-indexing once a file is open.
+    # Open the seed files first (for --seed-only runs, open any project source
+    # as a kick) so indexing begins, THEN wait for it - call hierarchy needs it.
     kick = list(seed_files)
     if not kick and seed_names:
-        cand = sorted(glob.glob(os.path.join(root, "**", "*.cpp"), recursive=True))
+        cand = discover_source_files(root, exclude_dirs)
         if cand:
             kick = [cand[0]]
     for p in kick:
         open_file(p)
     sys.stderr.write("lsp-graph: waiting for background index...\n")
-    lsp.pump(index_timeout, until_index=True)
+    lsp.wait_for_ready(index_timeout)
     time.sleep(0.5)
 
     def itemkey(item):
@@ -472,23 +549,59 @@ def build_callgraph(
         # a crash takes down the whole process. Running every expansion only
         # after the call graph (the primary output) is fully built means a crash
         # here can only cost inheritance edges, never already-collected calls.
-        pending_type_expansion.append((node, sym, uri))
+        # Skipped entirely (no requests at all) if the server never advertised
+        # typeHierarchyProvider (e.g. pyright - confirmed it doesn't support
+        # type hierarchy at all, only call hierarchy).
+        if has_type_hierarchy:
+            pending_type_expansion.append((node, sym, uri))
         return node
 
-    def expand_type_hierarchy(node, sym, uri):
-        # clangd 14 speaks its pre-standardization extension (a single request
-        # returns the whole parents/children chain, pre-resolved to `resolve`
-        # levels deep) rather than LSP 3.17's prepareTypeHierarchy/supertypes/
-        # subtypes trio - same generation gap as callHierarchy/incomingCalls-only.
-        result = lsp.request(
-            "textDocument/typeHierarchy",
-            {
-                "textDocument": {"uri": uri},
-                "position": sym["selectionRange"]["start"],
-                "direction": 2,  # Both (0=Children, 1=Parents, 2=Both)
-                "resolve": type_depth,
-            },
+    def _std_type_chain(item, key, remaining):
+        """Standardized LSP 3.17 typeHierarchy/supertypes|subtypes only return
+        one hop per call, unlike clangd's legacy extension - so recurse up to
+        `remaining` hops here, attaching each further hop under the same `key`
+        clangd's shape uses ("parents" or "children"), so _walk_type_edges can
+        consume either source uniformly."""
+        method = (
+            "typeHierarchy/supertypes" if key == "parents" else "typeHierarchy/subtypes"
         )
+        results = lsp.request(method, {"item": item}) or []
+        out = []
+        for r in results:
+            r = dict(r)
+            if remaining > 1:
+                r[key] = _std_type_chain(r, key, remaining - 1)
+            out.append(r)
+        return out
+
+    def expand_type_hierarchy(node, sym, uri):
+        pos = sym["selectionRange"]["start"]
+        # Try the standardized prepareTypeHierarchy/supertypes/subtypes trio
+        # first (LSP 3.17); fall back to clangd's pre-standardization extension
+        # (a single request returns the whole parents/children chain, pre-
+        # resolved to `resolve` levels deep, inline) - same generation gap as
+        # callHierarchy/incomingCalls-only. Only reached when the server
+        # advertised typeHierarchyProvider at all (see type_node_for).
+        prepared = lsp.request(
+            "textDocument/prepareTypeHierarchy",
+            {"textDocument": {"uri": uri}, "position": pos},
+        )
+        if prepared:
+            item = prepared[0]
+            result = {
+                "parents": _std_type_chain(item, "parents", type_depth),
+                "children": _std_type_chain(item, "children", type_depth),
+            }
+        else:
+            result = lsp.request(
+                "textDocument/typeHierarchy",
+                {
+                    "textDocument": {"uri": uri},
+                    "position": pos,
+                    "direction": 2,  # Both (0=Children, 1=Parents, 2=Both)
+                    "resolve": type_depth,
+                },
+            )
         if not result:
             return
         _walk_type_edges(result.get("parents"), node, True)
@@ -626,14 +739,20 @@ def build_callgraph(
         for sym, uri in discovered:
             kind = sym.get("kind")
             if kind in KIND_CLASS:
-                bulk_items.append(
+                # Ask the server for a real CallHierarchyItem rather than
+                # hand-rolling one from raw documentSymbol data: a hand-rolled
+                # dict is missing fields (e.g. `range`) a real item has, and
+                # while clangd tolerates that, pyright silently no-ops on
+                # incomingCalls/outgoingCalls for a malformed item (confirmed -
+                # zero call edges came back until this was fixed).
+                items = lsp.request(
+                    "textDocument/prepareCallHierarchy",
                     {
-                        "uri": uri,
-                        "name": sym["name"],
-                        "kind": kind,
-                        "selectionRange": sym["selectionRange"],
-                    }
+                        "textDocument": {"uri": uri},
+                        "position": sym["selectionRange"]["start"],
+                    },
                 )
+                bulk_items.extend(items or [])
             elif kind in TYPE_KIND_CLASS:
                 type_node_for(sym, uri)
 
@@ -665,25 +784,47 @@ def build_callgraph(
         if d >= depth:
             continue
         open_file(_path(item["uri"]))
-        incoming = lsp.request("callHierarchy/incomingCalls", {"item": item}) or []
-        callee = node_for(item)
-        for call in incoming:
-            frm = call.get("from")
-            if not frm:
-                continue
-            if itemkey(frm) not in nodes and len(nodes) >= max_nodes:
-                continue  # don't add new caller nodes past the cap
-            caller = node_for(frm)
-            edges[(caller["id"], callee["id"])] = {
-                "source": caller["id"],
-                "target": callee["id"],
-                "label": "calls",
-                "classes": ["call"],
-            }
-            k = itemkey(frm)
-            if k not in visited and len(nodes) < max_nodes:
-                visited.add(k)
-                queue.append((frm, d + 1))
+        origin = node_for(item)
+        if direction in ("in", "both"):
+            incoming = lsp.request("callHierarchy/incomingCalls", {"item": item}) or []
+            for call in incoming:
+                frm = call.get("from")
+                if not frm:
+                    continue
+                if itemkey(frm) not in nodes and len(nodes) >= max_nodes:
+                    continue  # don't add new caller nodes past the cap
+                caller = node_for(frm)
+                edges[(caller["id"], origin["id"])] = {
+                    "source": caller["id"],
+                    "target": origin["id"],
+                    "label": "calls",
+                    "classes": ["call"],
+                }
+                k = itemkey(frm)
+                if k not in visited and len(nodes) < max_nodes:
+                    visited.add(k)
+                    queue.append((frm, d + 1))
+        if direction in ("out", "both"):
+            # Only meaningful on servers implementing outgoingCalls (clangd 14
+            # doesn't - it always returns empty here, a harmless no-op).
+            outgoing = lsp.request("callHierarchy/outgoingCalls", {"item": item}) or []
+            for call in outgoing:
+                to = call.get("to")
+                if not to:
+                    continue
+                if itemkey(to) not in nodes and len(nodes) >= max_nodes:
+                    continue  # don't add new callee nodes past the cap
+                callee = node_for(to)
+                edges[(origin["id"], callee["id"])] = {
+                    "source": origin["id"],
+                    "target": callee["id"],
+                    "label": "calls",
+                    "classes": ["call"],
+                }
+                k = itemkey(to)
+                if k not in visited and len(nodes) < max_nodes:
+                    visited.add(k)
+                    queue.append((to, d + 1))
 
     # Now that the call graph is fully built, resolve every type's ancestors/
     # descendants. Deferred to last (see type_node_for) so a typeHierarchy crash
@@ -726,36 +867,32 @@ def assemble(nodes, edges, root, seeds_desc, truncated):
     }
 
 
-def find_compile_commands(project, override):
-    if override:
-        return override
-    if os.path.exists(os.path.join(project, "compile_commands.json")):
-        return project
-    for d in sorted(glob.glob(os.path.join(project, "build*"))):
-        if os.path.exists(os.path.join(d, "compile_commands.json")):
-            return d
-    return None
-
-
 def main():
     ap = argparse.ArgumentParser(
         prog="lsp-graph",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Drive a language server (clangd) and emit a call-graph model JSON for\n"
-            "the socketscope viewer. The graph is built by walking callers\n"
-            "(incomingCalls) up from the seed symbols. Pipe to: render-graph-html.py"
+            "Low-level LSP client: connect to an ALREADY-RUNNING language server\n"
+            "over a Unix domain socket and emit a call-graph model JSON for the\n"
+            "socketscope viewer. Normally you don't run this directly - use a\n"
+            "per-server wrapper (clangd-lsp-graph, pyright-lsp-graph) that starts\n"
+            "the server, bridges it to a socket, and calls this for you."
         ),
         epilog=(
-            "examples:\n"
-            "  lsp-graph proj --file src/foo.cpp | render-graph-html.py > calls.html\n"
-            "  lsp-graph proj --seed planPath --depth 4 | render-graph-html.py\n"
-            "  lsp-graph proj --all --max-nodes 5000 | render-graph-html.py\n"
+            "examples (normal usage - via a wrapper):\n"
+            "  clangd-lsp-graph proj --file src/foo.cpp | render-graph-html.py > c.html\n"
+            "  pyright-lsp-graph proj --all --max-nodes 5000 | render-graph-html.py\n"
+            "\ndirect usage (already have a server on a socket):\n"
+            "  lsp-graph proj --connect /tmp/lsp.sock --seed planPath --depth 4\n"
         ),
     )
+    ap.add_argument("project", help="project root")
     ap.add_argument(
-        "project",
-        help="project root (contains, or has a build dir with, compile_commands.json)",
+        "--connect",
+        required=True,
+        metavar="PATH",
+        help="Unix domain socket path an already-running language server is "
+        "reachable on (see wrapper scripts, e.g. clangd-lsp-graph)",
     )
     ap.add_argument(
         "--seed",
@@ -794,6 +931,14 @@ def main():
         help="caller BFS hops from the seeds (default: 3)",
     )
     ap.add_argument(
+        "--direction",
+        choices=["in", "out", "both"],
+        default="in",
+        help="walk callers (in, the impact direction - default), callees "
+        "(out), or both. clangd 14 only implements incomingCalls (in); "
+        "servers with full call hierarchy (e.g. pyright) support out/both",
+    )
+    ap.add_argument(
         "--max-nodes",
         type=int,
         default=400,
@@ -808,23 +953,12 @@ def main():
         help="ancestor/descendant hops to resolve per type via typeHierarchy (default: 3)",
     )
     ap.add_argument(
-        "--compile-commands",
-        default=None,
-        metavar="DIR",
-        help="dir with compile_commands.json (default: autodetect under the project)",
-    )
-    ap.add_argument(
-        "--server",
-        default="clangd",
-        metavar="CMD",
-        help="language server command (default: clangd)",
-    )
-    ap.add_argument(
         "--index-timeout",
         type=int,
         default=60,
         metavar="S",
-        help="seconds to wait for the background index (default: 60)",
+        help="max seconds to wait for the server to settle after opening seed "
+        "files, before assuming it's ready (default: 60)",
     )
     args = ap.parse_args()
 
@@ -834,19 +968,13 @@ def main():
     if not args.seed and not args.file and not args.all:
         ap.error("give at least one --seed NAME, --file PATH, or --all")
 
-    cmd = [args.server]
-    if "clangd" in os.path.basename(args.server):
-        cmd += ["--background-index", "--log=error"]
-        cc = find_compile_commands(project, args.compile_commands)
-        if cc:
-            cmd.append("--compile-commands-dir=" + cc)
-        else:
-            sys.stderr.write(
-                "lsp-graph: warning: no compile_commands.json found under %s\n"
-                % project
-            )
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(args.connect)
+    except OSError as e:
+        raise SystemExit("lsp-graph: cannot connect to %s: %s" % (args.connect, e))
 
-    lsp = LSP(cmd)
+    lsp = LSP(sock)
     try:
         ok = lsp.request(
             "initialize",
@@ -856,6 +984,7 @@ def main():
                 "capabilities": {
                     "textDocument": {
                         "callHierarchy": {"dynamicRegistration": True},
+                        "typeHierarchy": {"dynamicRegistration": True},
                         "documentSymbol": {"hierarchicalDocumentSymbolSupport": True},
                     },
                     "window": {"workDoneProgress": True},
@@ -865,6 +994,9 @@ def main():
         if ok is None:
             raise SystemExit("lsp-graph: server failed to initialize")
         lsp.notify("initialized", {})
+        has_type_hierarchy = bool(
+            (ok.get("capabilities") or {}).get("typeHierarchyProvider")
+        )
 
         # --file may be given relative to cwd or to the project root.
         seed_files = [
@@ -878,10 +1010,12 @@ def main():
             seed_files,
             args.all,
             args.exclude_dir,
+            args.direction,
             args.depth,
             args.max_nodes,
             args.index_timeout,
             args.type_depth,
+            has_type_hierarchy,
         )
     finally:
         lsp.shutdown()

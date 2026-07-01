@@ -113,27 +113,64 @@ natural tools. Source-file nodes start hidden — toggle the **source** node cla
 reveal them; CMake-internal `.rule`/generated stubs are split into a separate, also-hidden
 **generated** class.
 
-**`lsp-graph`** — drive a language server ([clangd](https://clangd.llvm.org/) by default)
-and emit a **call graph**. It walks the call hierarchy (`callHierarchy/incomingCalls`)
-outward from one or more seed symbols:
+**`lsp-graph`** — drive any [LSP](https://microsoft.github.io/language-server-protocol/)
+language server and emit a **call graph**, by walking the call hierarchy
+(`callHierarchy/incomingCalls`/`outgoingCalls`) outward from one or more seed symbols.
+lsp-graph itself is a pure LSP *client* — LSP only specifies the JSON-RPC message
+protocol, not how to start a server or which transport it uses, so lsp-graph never
+spawns one; it just connects to an already-running server over a Unix domain socket
+(`--connect`). Starting the right server with the right flags is a different problem,
+owned by a small per-server **generator wrapper** — run those, not lsp-graph directly:
 
 ```bash
-lsp-graph proj --file src/foo.cpp | render-graph-html.py > calls.html   # seed: a file's functions
-lsp-graph proj --seed planPath --depth 4 | render-graph-html.py         # seed: a symbol name
+clangd-lsp-graph proj --file src/foo.cpp | render-graph-html.py > calls.html    # C/C++, seed: a file's functions
+pyright-lsp-graph proj --seed plan_path --depth 4 | render-graph-html.py       # Python, seed: a symbol name
+clangd-lsp-graph proj --all --max-nodes 5000 | render-graph-html.py           # whole project
 ```
+
+Each wrapper spins up its server just long enough to answer the queries, bridges its
+stdio to a fresh socket, runs `lsp-graph --connect <socket>` with the same arguments,
+streams its JSON straight through, then tears everything down — it's not a persistent
+server. `clangd-lsp-graph` autodetects `compile_commands.json` under `<proj>/build*`;
+`pyright-lsp-graph` needs `pyright` installed separately (`pip install pyright`) and
+wraps `pyright-langserver --stdio`. Adding another language/server is just a third
+small wrapper script — lsp-graph itself doesn't change.
 
 Nodes are functions/methods/constructors (seeds get a red border), edges are directed
 caller→callee, so the *Callers* / *Callees* traversals do impact analysis and **Topo BFS**
 lays the call graph out by depth. It's bounded by `--depth` (default 3) and `--max-nodes`.
-The graph is built from **callers** (`incomingCalls`) — the "what breaks if I change this"
-direction — because clangd doesn't implement outgoing call hierarchy. Needs `clangd` on
-PATH and a `compile_commands.json` (autodetected under `<proj>/build*`).
+By default the graph is built from **callers** (`incomingCalls`) — the "what breaks if I
+change this" direction; `--direction out`/`both` also walks `outgoingCalls` for servers
+that implement it (clangd 14 doesn't - callers only; pyright implements both fully).
+`--all` seeds from every function/type in the project instead of a specific `--seed`/
+`--file`, for a whole-project graph (combine with a larger `--max-nodes`).
 
 Every method/constructor also pulls in its **owning type** (class/struct/interface/enum)
 as its own node — a `member-of` edge to the type it belongs to (`textDocument/documentSymbol`
-containment), plus the type's ancestors/descendants (`textDocument/typeHierarchy`) as
-`inherits` edges, bounded by `--type-depth` (default 3). *Supertypes* / *Subtypes* /
-*Members* / *Owner type* traversals navigate this the same way *Callers*/*Callees* do calls.
+containment), plus the type's ancestors/descendants (typeHierarchy, tried via the
+standardized LSP 3.17 protocol first, falling back to clangd's older extension) as
+`inherits` edges, bounded by `--type-depth` (default 3) — skipped entirely for servers
+that don't support type hierarchy at all (e.g. pyright, call-hierarchy only). *Supertypes*
+/ *Subtypes* / *Members* / *Owner type* traversals navigate this the same way
+*Callers*/*Callees* do calls.
+
+#### LSP client vs. server orchestration
+
+LSP itself only specifies the JSON-RPC message protocol over *some* bidirectional
+byte stream — it doesn't mandate a transport (servers each pick their own: clangd
+only speaks stdio; pyright supports stdio, node-ipc, or a TCP socket), and it says
+nothing about how to *start* a server with the right project-specific flags (a C++
+project's `compile_commands.json`, a Python venv, …). Those are a deployment
+concern, separate from "turn documentSymbol/callHierarchy responses into a graph."
+So `lsp-graph` is a pure client: it takes `--connect <unix-socket-path>` and never
+spawns anything. Each server gets its own small wrapper — `clangd-lsp-graph`,
+`pyright-lsp-graph` — that (1) spawns the server over its own stdio, (2) bridges
+that stdio to a fresh Unix domain socket (accept one connection, relay both
+directions), (3) runs `lsp-graph --connect <socket>` with the same arguments,
+streaming its JSON straight through as its own stdout, (4) tears everything down.
+Neither wrapper is a persistent server — each run starts one, uses it, and exits,
+same as any other generator. Adding a new language/server is a third small wrapper
+script; `lsp-graph` itself doesn't change.
 
 ### Filtering at capture time
 
@@ -192,9 +229,16 @@ sudo ./dist/sockets-graph-scope > sockets.html   # capture + render in one shot
 sudo ./dist/sockets-graph-scope -o sockets       # write sockets.html directly
 
 just bundle dirtree-graph                        # -> dist/dirtree-graph-scope
-just bundle lsp-graph calls                       # custom output name
 just bundle-all                                  # every generator -> dist/
 ```
+
+`clangd-lsp-graph`/`pyright-lsp-graph` match the `*-graph` glob and *do* bundle and
+render correctly (`just bundle clangd-lsp-graph` → a working `dist/clangd-lsp-graph-scope`)
+— but the bundled artifact still needs a separate `lsp-graph` reachable at runtime (on
+`PATH`, or copied alongside it in `dist/`), since they orchestrate it as its own process
+rather than importing it. So they're not fully self-contained the way other bundles are;
+everything else about them (a top-level `main()`, no `Viewer`/`-o` conflicts, correct
+stdout capture and exit-code handling) plays by the same rules as any generator.
 
 Bundles land in `dist/` (git-ignored). The recipe is plain shell: it cats the
 viewer (everything lives under one `class Viewer`), then the generator, then a
@@ -211,10 +255,12 @@ extension** — even though they're Python (a `#!/usr/bin/env python3` shebang m
 them directly runnable, e.g. `./sockets-graph`):
 
 - **generators** are `{subject}-graph`: `sockets-graph`, `dirtree-graph`,
-  `cmake-graph`, `lsp-graph`.
+  `cmake-graph`, `clangd-lsp-graph`, `pyright-lsp-graph`.
 - **bundles** are `{subject}-graph-scope` — the generator and viewer fused into one
   ("-scope" as in *socketscope*). `just bundle sockets-graph` → `dist/sockets-graph-scope`.
 - the **viewer** is `render-graph-html.py`.
+- `lsp-graph` is the odd one out: a shared LSP-protocol **client**, not itself a
+  generator you'd normally run (see "LSP client vs. server orchestration" below).
 
 ### Generator conventions
 
