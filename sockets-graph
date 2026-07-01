@@ -175,11 +175,13 @@ def read_processes():
                 state = line.split(":", 1)[1].strip()
         # cmdline -> NUL-separated argv; empty => kernel thread
         cmdline = ""
+        argv0 = ""
         try:
             with open(base + "/cmdline", "rb") as fh:
                 raw = fh.read()
             argv = [a.decode("utf-8", "replace") for a in raw.split(b"\x00") if a]
             cmdline = " ".join(argv)
+            argv0 = argv[0] if argv else ""
         except (PermissionError, FileNotFoundError, ProcessLookupError, OSError):
             cmdline = ""
         is_kernel_thread = cmdline == ""
@@ -192,6 +194,7 @@ def read_processes():
         procs[pid] = {
             "pid": pid,
             "comm": name or "?",
+            "argv0": argv0,
             "cmdline": cmdline,
             "uid": uid if uid is not None else -1,
             "user": user,
@@ -382,13 +385,28 @@ PROC_LABEL_MAX = 1024
 UDS_LABEL_MAX = 100
 
 
+def _proc_name(p):
+    # /proc/<pid>/status "Name" (comm) is the canonical process name but the kernel
+    # caps it at TASK_COMM_LEN-1 = 15 chars (e.g. "dbus-run-session" -> "dbus-run-sessio").
+    # When it looks truncated, recover the fuller name from argv[0]'s basename - but only
+    # if it starts with comm, so a process that deliberately set a different comm (via
+    # prctl) still wins.
+    comm = p["comm"]
+    argv0 = p.get("argv0", "")
+    if argv0 and len(comm) >= 15:
+        base = os.path.basename(argv0)
+        if base.startswith(comm):
+            return base
+    return comm
+
+
 def proc_label(p):
-    return _short("%s (%d)" % (p["comm"], p["pid"]), PROC_LABEL_MAX)
+    return _short("%s (%d)" % (_proc_name(p), p["pid"]), PROC_LABEL_MAX)
 
 
 def proc_full(p, nsock):
     return "%s\ncmd: %s\nuser: %s (uid %d)   ppid: %d\nstate: %s   sockets: %d" % (
-        p["comm"],
+        _proc_name(p),
         _short(p["cmdline"], 200),
         p["user"],
         p["uid"],
