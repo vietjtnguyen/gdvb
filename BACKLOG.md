@@ -104,6 +104,19 @@ Check things off as they land.
       traversal-selectable while hidden, since only node visibility gates the
       walk. Synthesized once in `_finalize` from the existing containment
       edges, shared by both the walk and stdin path-list builders.
+- [x] **Choose BFS roots explicitly via a "Mark" state** — a new `marked` Set,
+      separate from `pinned`, flags selected nodes as layout anchors; Topo BFS
+      seeds marked nodes first (forced roots) regardless of in-degree, falling
+      back to the existing in-degree ordering for the rest (unchanged when
+      nothing is marked). Deliberately not reusing `pinned`: that's a physics-sim
+      concern (freeze position) orthogonal to "seed this layout from here", and
+      conflating them would mean a pin set for an unrelated reason silently
+      changes root choice next time Topo BFS runs. Named generically ("Mark",
+      not "Root") since future static layouts may have no notion of roots at
+      all, in which case marks are simply inert for them. Visually composes with
+      Pin instead of clobbering it: `pinned` owns `border-*` (dashed amber),
+      `marked` owns `underlay-*` (purple halo) - disjoint Cytoscape style
+      properties, so a node that's both shows both at once.
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
       Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it
@@ -154,9 +167,6 @@ Check things off as they land.
 
 ## Viewer / UX
 
-- [ ] **Choose BFS roots explicitly** — let **pinned** nodes force-seed as roots
-      for Topo BFS (`topoBFS`'s in-degree-order seeding, `render-graph-html.py`
-      `topoBFS()`), instead of always picking real in-degree-0 nodes first.
 - [ ] **Visualization layers** — a first-class JSON concept alongside `style` /
       `traversals` / `force_structures` that activates data→appearance mappings:
       e.g. map a numeric node field to a colormap (`size` → fill, `mtime` → heat),

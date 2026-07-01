@@ -267,14 +267,15 @@ class Viewer:
   <div class="row"><input type="checkbox" id="elabels" checked><label for="elabels">show edge labels</label></div>
   <h2>Static layout</h2>
   <button id="topobfs">&#x2192; Topo BFS</button>
-  <div class="key">left&rarr;right BFS layers from the directed roots of the selection (all visible if none). Freezes motion; drag nodes or Resume to edit.</div>
+  <div class="key">left&rarr;right BFS layers from the directed roots of the selection (all visible if none); marked nodes are forced roots when present. Freezes motion; drag nodes or Resume to edit.</div>
   <h2>Select</h2>
   <button id="sel-all">All</button><button id="sel-none">None</button><button id="sel-invert">Invert</button>
   <button id="sel-grow">Grow</button><button id="sel-shrink">Shrink</button><button id="sel-walk">Walk</button><button id="sel-comp">Component</button>
-  <button id="pinsel">&#128204; Pin</button><button id="clearsel">&#x2715; Clear</button>
+  <button id="pinsel">&#128204; Pin</button><button id="marksel">&#x1F6A9; Mark</button><button id="clearsel">&#x2715; Clear</button>
   <div class="key">tap = select &middot; shift-tap / shift-drag = multi-select<br>
     Grow/Shrink = expand/erode &middot; Walk = step outward &middot; Component = whole connected group<br>
-    Pin freezes selected nodes in place (dashed amber border)</div>
+    Pin freezes selected nodes in place (dashed amber border)<br>
+    Mark flags them as layout anchors (purple halo) - e.g. forced Topo BFS roots; layouts that don't use anchors ignore marks</div>
   <div id="traversesec"><h2>Traverse</h2><div id="traverse"></div>
     <div class="key">rule-based selection growth defined in the data</div></div>
   <div id="chaininfo" style="font-size:11.5px;color:#1f6feb;margin:4px 0"></div>
@@ -356,8 +357,11 @@ const BASE_STYLE=[
 const CLASS_STYLE=NODE_CLASSES.filter(c=>c.color).map(c=>({selector:"node."+c.id,style:{"background-color":c.color}}))
   .concat(EDGE_CLASSES.filter(c=>c.color).map(c=>({selector:"edge."+c.id,style:{"line-color":c.color,"target-arrow-color":c.color}})));
 const INTERACTION_STYLE=[
-  {selector:"node.pinned",style:{"border-style":"dashed","border-width":3,"border-color":"#c77800",
-    "underlay-color":"#e0a800","underlay-opacity":.2,"underlay-padding":4}},
+  // pinned owns border-*, marked owns underlay-* - disjoint properties so a node
+  // that's both shows both at once (dashed amber border + purple halo) instead of
+  // one clobbering the other via Cytoscape's last-matching-selector-wins cascade.
+  {selector:"node.pinned",style:{"border-style":"dashed","border-width":3,"border-color":"#c77800"}},
+  {selector:"node.marked",style:{"underlay-color":"#7c5cff","underlay-opacity":.28,"underlay-padding":6}},
   {selector:"node:selected",style:{"border-color":"#1f6feb","border-width":4}},
   {selector:"node.faded",style:{"background-opacity":.12,"border-opacity":.18,"text-opacity":.7,"color":"#444"}},
   {selector:"edge.faded",style:{"opacity":.07,"text-opacity":0}}];
@@ -374,6 +378,11 @@ cy.on("mousemove","node,edge",e=>{tip.style.left=(e.originalEvent.pageX+12)+"px"
 cy.on("mouseout","node,edge",()=>tip.style.display="none");
 let selectedId=null,hop=null,radial=false,radK=RAD_K;
 const pinned=new Set();  // node ids frozen in place (still exert forces, just don't move)
+// Layout-method-agnostic anchor hint: static layouts consult this when they have a
+// notion of "roots" (e.g. Topo BFS forces marked nodes to layer 0); layouts without
+// that notion just ignore it. Deliberately separate from `pinned` (a physics-sim
+// concern) so freezing a node's position never silently changes layout root choice.
+const marked=new Set();
 const ADJ={};cy.nodes().forEach(n=>ADJ[n.id()]=[]);
 EDGES.forEach(e=>{if(ADJ[e.source]&&ADJ[e.target]){ADJ[e.source].push(e.target);ADJ[e.target].push(e.source);}});
 // Per-element class lists + per-class visibility. INC = every edge touching a node
@@ -557,6 +566,16 @@ function doPin(){const sel=cy.$("node:selected");
   reheat(0);
   chaininfo.textContent=(anyUnpinned?"pinned ":"unpinned ")+sel.length+" node"+(sel.length>1?"s":"")+" · "+pinned.size+" pinned total";}
 document.getElementById("pinsel").onclick=doPin;
+// Mark: same mixed-toggle shape as Pin, but flags nodes as layout anchors rather
+// than freezing their physics - a purely logical hint a static layout may or may
+// not consult (see `marked` above).
+function doMark(){const sel=cy.$("node:selected");
+  if(!sel.length){chaininfo.textContent="select node(s) first, then mark";return;}
+  const anyUnmarked=sel.some(n=>!marked.has(n.id()));
+  cy.batch(()=>sel.forEach(n=>{const id=n.id();
+    if(anyUnmarked){marked.add(id);n.addClass("marked");}else{marked.delete(id);n.removeClass("marked");}}));
+  chaininfo.textContent=(anyUnmarked?"marked ":"unmarked ")+sel.length+" node"+(sel.length>1?"s":"")+" · "+marked.size+" marked total";}
+document.getElementById("marksel").onclick=doMark;
 // Search matches nodes across all their text (label + tooltip + type). Plain
 // query = space-separated terms, ALL must appear (case-insensitive substring);
 // wrap in /.../ for a regex (e.g. /:(80|443)\b/ or /sshd/i). Matches become the
@@ -596,10 +615,12 @@ function topoBFS(){
   S.forEach(id=>(INC[id]||[]).forEach(x=>{
     if(x.s===id&&x.t!==id&&inS.has(x.t))out[id].push(x.t);
     if(x.t===id&&x.s!==id&&inS.has(x.s))indeg[id]++;}));
-  // Seed in-degree order: real roots (0) first, then lowest-in-degree pseudo-roots
-  // for cyclic / unreachable components. Each unvisited seed BFSes its reach.
+  // Seed order: marked nodes first (forced roots, regardless of in-degree - see
+  // the `marked` anchor hint), then real roots (in-degree 0), then lowest-in-degree
+  // pseudo-roots for cyclic/unreachable components. Each unvisited seed BFSes its
+  // reach. With no marks this is unchanged from before.
   const layer={},q=[];
-  S.slice().sort((a,b)=>indeg[a]-indeg[b]).forEach(r=>{if(layer[r]!==undefined)return;
+  S.slice().sort((a,b)=>(marked.has(a)?0:1)-(marked.has(b)?0:1)||indeg[a]-indeg[b]).forEach(r=>{if(layer[r]!==undefined)return;
     layer[r]=0;q.push(r);
     while(q.length){const u=q.shift();
       out[u].forEach(w=>{if(layer[w]===undefined){layer[w]=layer[u]+1;q.push(w);}});}});
