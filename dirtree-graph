@@ -116,11 +116,17 @@ TRAVERSALS = [
         "mode": "flood",
         "rules": [{"edge": "edge.child", "dir": "out"}],
     },
-    # Single hop up (mode:step, not flood) - unlike the generic "Grow" select
-    # tool, which would also add the selection's children, this only ever adds
-    # the parent(s). Click repeatedly to climb one level at a time while
-    # keeping the whole path selected; "Path to root" below is the flood
-    # version of the same rule.
+    # Single hop down/up (mode:step, not flood) - unlike the generic "Grow"
+    # select tool, which expands in every direction at once, these only ever
+    # add one side. Click repeatedly to walk one level at a time while keeping
+    # the whole path selected; "Descendants"/"Path to root" are the flood
+    # versions of the same rules.
+    {
+        "id": "children",
+        "label": "↓ Children",
+        "mode": "step",
+        "rules": [{"edge": "edge.child", "dir": "out"}],
+    },
     {
         "id": "parent",
         "label": "↑ Parent",
