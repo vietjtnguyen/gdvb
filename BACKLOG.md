@@ -84,8 +84,7 @@ Check things off as they land.
       + Topo BFS. **clangd 14 only implements incomingCalls** (callers / impact direction;
       outgoingCalls returns empty), and clangd starts indexing only after the first
       `didOpen` — both handled. Verified against `orchard/`.
-      Future modes (still open): reference graphs; `--direction` once a server supports
-      outgoingCalls; other servers via `--server`.
+      Future modes (still open): reference graphs.
 - [x] **"Show all" / "Hide all" buttons** on each legend (node classes / edge
       classes) — bulk-set every class in that legend in one click instead of
       per-row toggling; single `applyVis()`/`reheat()` for the whole batch.
@@ -197,6 +196,75 @@ Check things off as they land.
       stderr warning instead of crashing. Also reordered type-hierarchy
       expansion to run only *after* the call graph is fully built, so a
       typeHierarchy crash can cost inheritance edges but never the calls.
+- [x] **`lsp-graph` generalized to any LSP server; `clangd-lsp-graph` /
+      `pyright-lsp-graph` split out.** lsp-graph was clangd-first (hardcoded
+      `languageId: "cpp"`, a `*.cpp`-only kick-file glob, clangd-specific
+      launch flags baked into `main()`). Reworked as a pure LSP *client*: it
+      takes `--connect <unix-socket-path>` and never spawns a server at all.
+      Rationale (this was a deliberate architecture discussion, not just a
+      cleanup): LSP only specifies the JSON-RPC protocol over *some*
+      bidirectional stream, not a transport (clangd only speaks stdio; pyright
+      also supports node-ipc/TCP) or how to launch a server with the right
+      project-specific flags (a C++ `compile_commands.json`, a Python venv) -
+      that's a genuinely different problem from "turn documentSymbol/
+      callHierarchy responses into a graph," and conflating them was what made
+      the file feel C++-shaped. Confirmed a real Unix domain socket
+      (`SOCK_STREAM`) is fully bidirectional (unlike a `mkfifo` named pipe,
+      which needs two for round-trip) before picking it as the transport.
+      Split server orchestration into two new standalone generators,
+      `clangd-lsp-graph` and `pyright-lsp-graph` (deliberately separate
+      scripts, not one generic orchestrator + profile table): each spawns its
+      server over stdio, bridges that stdio to a fresh Unix domain socket
+      (accept one connection, relay both directions on threads), runs
+      `lsp-graph --connect <socket>` with the same arguments, streams its
+      stdout straight through, then tears everything down - not a persistent
+      server, same "called with args, JSON pops out" contract as any
+      generator. `clangd-lsp-graph` owns compile_commands.json autodetection;
+      `pyright-lsp-graph` just runs `pyright-langserver --stdio`.
+      Generalized along the way: `LANG_BY_EXT` + shebang-sniffing (for this
+      project's own extensionless scripts) replace the hardcoded `cpp`
+      languageId; `discover_source_files` covers any known extension; the
+      clangd-specific "latch first $/progress begin token" index-wait became
+      a generic progress-quiescence heuristic (works for any server, degrades
+      to a flat timeout if a server reports no progress at all); typeHierarchy
+      now tries the standardized LSP 3.17 protocol before falling back to
+      clangd's extension, gated on the server actually advertising
+      `typeHierarchyProvider` (pyright doesn't - skipped with zero wasted
+      requests); added `--direction in`/`out`/`both` for call hierarchy
+      (clangd 14 only ever returns data for `in`; confirmed pyright implements
+      `outgoingCalls` for real by testing it directly).
+      Found and fixed one real cross-server bug while verifying against
+      pyright: `--all`'s bulk-seeded items were hand-built dicts missing the
+      `range` field a real `CallHierarchyItem` has - clangd tolerated that,
+      pyright silently no-op'd `incomingCalls`/`outgoingCalls` on them (zero
+      call edges came back). Fixed by calling `prepareCallHierarchy` for real,
+      like `--seed`/`--file` already did. Verified end-to-end against both
+      `orchard/` (clangd, exact node/edge-count regression match against the
+      pre-refactor baseline) and a Python project via `pyright` in a venv,
+      including dogfooding lsp-graph against this repo's own extensionless
+      scripts (confirms the shebang-sniffing path).
+      Checked whether the two wrappers actually bundle (`just bundle
+      clangd-lsp-graph`) rather than assuming - they didn't at first, for two
+      *compounding* reasons found by actually running the bundled output, not
+      just reading the code: (1) `bundle_main.py` captures stdout via
+      `contextlib.redirect_stdout`, which only swaps Python's `sys.stdout`
+      object - a child spawned with `stdout=None` inherits the real OS file
+      descriptor instead, so the model JSON bypassed the capture entirely; (2)
+      `main()` called `sys.exit(rc)` even on success, which `bundle_main.py`
+      reads as "the generator bailed early (e.g. `--help`) - relay stdout,
+      don't render," so it skipped rendering even when everything worked.
+      Fixed both: pipe the child's stdout, read it fully, and relay it via
+      `sys.stdout.write` (respects a bundle's redirected `sys.stdout`); only
+      call `sys.exit` on a genuine failure (`rc != 0`), matching the same
+      "return on success" convention (C1) every other generator follows.
+      Reverified by actually running both bundled scopes end-to-end (clangd
+      against `orchard/`, pyright against a scratch Python project) - both
+      produce correct, offline-rendering HTML. Remaining, smaller gap: the
+      bundled artifact still needs a separate `lsp-graph` reachable at
+      runtime (`PATH`, or copied alongside in `dist/`), since these wrappers
+      orchestrate it as its own process rather than importing it - so they're
+      not *fully* self-contained the way other bundles are, even though they
+      now bundle and render correctly.
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
       Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it
@@ -231,6 +299,55 @@ Check things off as they land.
       generation time — deconflicting the id namespace is only one small part
       of the actual stitching problem, so solve them together rather than
       pre-committing to an id scheme now.
+- [ ] **Make `clangd-lsp-graph`/`pyright-lsp-graph` bundles fully dependency-free.**
+      They now bundle and render correctly (`just bundle clangd-lsp-graph` produces
+      working HTML — see the Done entry above), but the bundled artifact still needs
+      a separate `lsp-graph` reachable at runtime (`PATH` or copied alongside), since
+      the wrapper orchestrates it as its own process rather than importing it. Planned
+      fix, not yet implemented: mirror how `render-graph-html.py` embeds Cytoscape.js
+      (a blob baked in, decompressed at write time, so it needs zero network refs) —
+      have `just bundle` base64-encode `lsp-graph`'s source and inject it as a
+      `_LSP_GRAPH_SOURCE_B64` constant into the bundle (only for generators that
+      reference `find_lsp_graph`, detected the same way the existing C1–C3 lint
+      already greps the generator source — so unrelated bundles like
+      `sockets-graph-scope` stay exactly as lean as today). At runtime,
+      `find_lsp_graph()` checks for that constant first, and if present, writes it out
+      to the same tmpdir already used (and already cleaned up) for the socket bridge,
+      instead of falling through to the PATH/sibling-file lookup it uses standalone.
+- [ ] **clangd-driven relationships are incomplete for C++**, inherent to the
+      LSP-driven approach: `--depth`/`--max-nodes`-bounded (not exhaustive by
+      design — seeded/bounded is the point), and clangd 14's `typeHierarchy` has a
+      real crash bug (segfaults on certain real code, confirmed against `orchard/`)
+      that silently truncates inheritance data for whatever wasn't resolved before
+      the crash. A single seeded, crash-tolerant LSP session is never going to be a
+      complete structural picture of a C++ project. See the Doxygen-based generator
+      idea below as a more robust complement for structure specifically.
+- [ ] **`doxygen-graph` — a generator reading Doxygen XML output**, likely a more
+      robust source of C++ *structure* (classes/structs/inheritance/namespaces/
+      containment) than driving clangd live, since Doxygen is an offline batch tool
+      with no crash-mid-session risk. `orchard/build-debug/share/doc/orchard/xml/`
+      already has real output to develop against (confirmed: 749 compounds — classes,
+      structs, namespaces, functions, — with `<basecompoundref>` giving inheritance
+      directly, and nested `<memberdef>`s giving containment). Confirmed this
+      particular build did NOT enable `REFERENCED_BY_RELATION`/`REFERENCES_RELATION`
+      (no `<references>`/`<referencedby>` elements present), so it has no call-graph
+      data — this generator would be structure-only, complementing lsp-graph's call
+      graphs rather than replacing them. Would need the same non-first-party
+      filtering as the item below (confirmed the index mixes `orchard::Angle`
+      alongside nlohmann/json's `adl_serializer` and `detail::actual_object_comparator`,
+      since vendored headers sit directly under `src/`).
+- [ ] **Exclude non-first-party content (stdlib/vendored libs) generally**, not just
+      per-generator ad hoc: `lsp-graph --all` already skips common vendor directory
+      names by default plus `--exclude-dir`, but confirmed the same leak in Doxygen
+      XML (see above) — a project's own namespace mixed in with a vendored
+      single-header library's internals, with no structural distinction from the
+      data alone (both just look like "a class/struct in some file"). Worth a
+      shared, consistent convention/mechanism across generators (dirtree-graph,
+      cmake-graph, lsp-graph, the future doxygen-graph) rather than reinventing
+      filtering per generator - e.g. a common notion of "project root vs. everything
+      under it" plus name-based heuristics, or leaning on each ecosystem's own
+      first-party marker where one exists (a compile_commands.json entry's directory
+      being under the project root vs. a system include path, etc.).
 
 ## Viewer / UX
 
