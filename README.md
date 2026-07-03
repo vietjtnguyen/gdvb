@@ -19,11 +19,13 @@ The viewer is built on [Cytoscape.js](https://js.cytoscape.org/) (a graph layout
 
 ## Install
 
-There's nothing to install. These are plain Python scripts with **zero dependencies** (standard library only) — copy `gdvb-render` and whichever generator(s) you want onto the machine (or clone the repo), optionally `chmod +x` them, and run.
+There's nothing to install — copy `gdvb-render` and whichever generator(s) you want onto the machine, or clone the repo, and run. On the Python side it's genuinely **zero dependencies** (standard library only, nothing to `pip install`); beyond that, each generator needs whatever it's reading to actually exist on the machine — not an extra dependency you install *for* gdvb, just the subject matter itself:
 
-- **Python 3.6+**, nothing to `pip install`.
-- **Linux** for `gdvb-sockets-graph` specifically (it reads `/proc`); other generators have their own needs (`gdvb-cmake-graph` wants `cmake` on `PATH`; the `gdvb-*-lsp-graph` wrappers want their language server installed).
-- A browser to open the result — a modern evergreen one (~2019+); nothing loads over the network, so this works air-gapped.
+- **Python 3.6+** for everything.
+- **Linux** for `gdvb-sockets-graph` specifically (it reads `/proc`).
+- **`cmake` on `PATH`** for `gdvb-cmake-graph`.
+- **A language server installed** (`clangd`, `pyright`) for the `gdvb-*-lsp-graph` wrappers.
+- **A browser** to open the result — a modern evergreen one (~2019+); nothing loads over the network, so this works air-gapped.
 
 ## Usage
 
