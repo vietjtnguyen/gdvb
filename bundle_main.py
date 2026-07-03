@@ -2,7 +2,7 @@
 # bundled entry point  (appended by `just bundle`)
 # ---------------------------------------------------------------------------
 # This is the glue tail of a generated single-file bundle:
-#   render-graph-html.py (viewer)  +  <generator>.py  +  this.
+#   gdvb-render (viewer)  +  <generator>  +  this.
 # The two sources are catted in with their `if __name__` trailers stripped, so
 # everything is in scope here. The viewer lives entirely under `class Viewer`
 # (its only top-level name), and the generator is catted last so the sole

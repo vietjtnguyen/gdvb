@@ -1,20 +1,20 @@
 # Format Python source with black
 format:
-    black render-graph-html.py
+    black gdvb-render
 
 # Cats the viewer (all under `class Viewer`) + the generator + the glue, after
 # linting the generator against the conventions (see README "Generator conventions").
-#   just bundle sockets-graph   ->  dist/sockets-graph-scope  (generate + render in one)
-#   just bundle lsp-graph calls
-# Fuse render-graph-html.py + a generator into one standalone runnable script (dist/).
+#   just bundle gdvb-sockets-graph   ->  dist/gdvb-sockets  (generate + render in one)
+#   just bundle gdvb-lsp-graph calls
+# Fuse gdvb-render + a generator into one standalone runnable script (dist/).
 bundle gen out="":
     #!/usr/bin/env bash
     set -euo pipefail
     gen="{{gen}}"
     [ -f "$gen" ] || { echo "bundle: generator not found: $gen" >&2; exit 1; }
     out="{{out}}"
-    [ -n "$out" ] || out="dist/$(basename "$gen")-scope"
-    if [ "$out" = "$gen" ] || [ "$(basename "$out")" = "render-graph-html.py" ]; then
+    [ -n "$out" ] || out="dist/$(basename "$gen" -graph)"
+    if [ "$out" = "$gen" ] || [ "$(basename "$out")" = "gdvb-render" ]; then
       echo "bundle: refusing to overwrite a source file ($out)" >&2; exit 1
     fi
     # --- lint generator conventions (see README) ---
@@ -27,7 +27,7 @@ bundle gen out="":
     fi
     mkdir -p "$(dirname "$out")"
     {
-      sed '/^if __name__ == "__main__":/,$d' render-graph-html.py
+      sed '/^if __name__ == "__main__":/,$d' gdvb-render
       sed '/^if __name__ == "__main__":/,$d' "$gen"
       cat bundle_main.py
     } > "$out"

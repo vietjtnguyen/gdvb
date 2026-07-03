@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""scrub-model - redact host-identifying data from a socketscope model JSON.
+"""gdvb-scrub - redact host-identifying data from a gdvb model JSON.
 
 A post-process FILTER (not a generator): reads one graph-model JSON on stdin (or a
 file arg), scrubs sensitive fields, and writes the scrubbed model JSON to stdout.
 It slots into the pipe so you can safely share the resulting HTML:
 
-    sockets-graph | scrub-model | render-graph-html.py > safe.html
-    scrub-model < snapshot.json | render-graph-html.py          # a saved snapshot
+    gdvb-sockets-graph | gdvb-scrub | gdvb-render > safe.html
+    gdvb-scrub < snapshot.json | gdvb-render          # a saved snapshot
 
 Nine scrub operations, ALL ENABLED BY DEFAULT, each disableable with --no-<op>:
 
@@ -20,10 +20,10 @@ Nine scrub operations, ALL ENABLED BY DEFAULT, each disableable with --no-<op>:
   hostname   replace the capture hostname (meta.host) everywhere it appears.
   users      redact usernames / uids (user: NAME (uid N) -> user: <user> (uid x));
              root / uid 0 kept (the proc-root class already reveals it). Also blanks
-             structured user/group/uid/gid fields (e.g. dirtree-graph models), sweeps
+             structured user/group/uid/gid fields (e.g. gdvb-dirtree-graph models), sweeps
              the known username(s) wherever else they appear, and redacts the username
              component of any /home/<user>/ or /Users/<user>/ path - so absolute source
-             paths from cmake-graph / lsp-graph (which carry no user field) are covered.
+             paths from gdvb-cmake-graph / gdvb-lsp-graph (which carry no user field) are covered.
   pids       remove PIDs from display: drop the "(pid)" in a proc label, the "ppid: M"
              field, and the socket "owners:" line (ownership is still shown by the
              graph edges). Fake pids would just be distracting, so they're removed.
@@ -36,7 +36,7 @@ Graceful on ANY model: the socket-format-aware ops (users/pids/cmdline/unix-path
 inodes) simply match nothing and pass through on non-socket models, while ids/ips/
 hostname/timestamp still apply. Stdlib only.
 
-COUPLING NOTE: the format-aware regexes below are keyed to sockets-graph's
+COUPLING NOTE: the format-aware regexes below are keyed to gdvb-sockets-graph's
 proc_label / proc_full / sock_full string templates. If those emitted strings change,
 update the corresponding patterns here.
 """
@@ -63,7 +63,7 @@ ALL_OPS = [
 # IP redaction (generic)
 # ---------------------------------------------------------------------------
 _IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
-# bracketed IPv6 as socketscope emits it: [addr]:port
+# bracketed IPv6 as gdvb emits it: [addr]:port
 _IPV6_BRACKET_RE = re.compile(r"\[([0-9A-Fa-f:.]+)\]")
 # bare IPv6 candidate: >=2 colons, hex groups; validated via inet_pton before use
 _IPV6_BARE_RE = re.compile(
@@ -128,7 +128,7 @@ def redact_ips(s):
 
 
 # ---------------------------------------------------------------------------
-# Format-aware text ops (keyed to sockets-graph's full/label templates)
+# Format-aware text ops (keyed to gdvb-sockets-graph's full/label templates)
 # ---------------------------------------------------------------------------
 _USER_RE = re.compile(r"user: (\S+) \(uid (\d+)\)")
 _PPID_RE = re.compile(r" *ppid: \d+")  # "   ppid: M" segment in proc tooltips
@@ -140,10 +140,10 @@ _INODE_RE = re.compile(r"   inode: \S+")
 _LABEL_PID_RE = re.compile(r" *\(\d+\)$")  # trailing " (pid)" in a proc label
 # The component right after /home/ or /Users/ is a username - redact it in any path,
 # even when the model carries no explicit user field to seed a needle from (e.g.
-# cmake-graph / lsp-graph absolute source paths). Generic, no username needed.
+# gdvb-cmake-graph / gdvb-lsp-graph absolute source paths). Generic, no username needed.
 _HOME_PATH_RE = re.compile(r"(/home/|/Users/)([^/\n]+)")
 _LOCAL_RE = re.compile(r"(\nlocal: )([^\n]*)")
-# sockets-graph truncates long labels to 28 chars with "…"; if the cut fell inside an
+# gdvb-sockets-graph truncates long labels to 28 chars with "…"; if the cut fell inside an
 # address, redaction leaves a dangling placeholder + ellipsis (e.g. "udp [x:x:x:x…").
 _TRUNC_IP_RE = re.compile(r"(x\.x\.x\.x|x:x:x:x)…+")
 
@@ -208,7 +208,7 @@ def _tidy_truncated_ip(s):
 # ---------------------------------------------------------------------------
 def build_name_needles(model):
     """Collect the real username / group-name strings to redact as needles across all
-    text. Two sources: structured user/group fields (dirtree-graph etc.) and the socket
+    text. Two sources: structured user/group fields (gdvb-dirtree-graph etc.) and the socket
     `user: NAME (uid N)` tooltip line. Needle replacement (not just field/regex edits)
     catches the same name wherever it's embedded - e.g. dirtree's `perms user:group`
     tooltip, or a username inside a cmdline path (`/home/<user>/...`). root / uid 0 are
@@ -334,7 +334,7 @@ def scrub(model, enabled):
 
 
 def _scrub_struct_owner(n):
-    """Blank structured owner fields (dirtree-graph etc.); keep root / 0."""
+    """Blank structured owner fields (gdvb-dirtree-graph etc.); keep root / 0."""
     if isinstance(n.get("user"), str) and n["user"] != "root":
         n["user"] = "<user>"
     if isinstance(n.get("group"), str) and n["group"] != "root":
@@ -347,12 +347,12 @@ def _scrub_struct_owner(n):
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="scrub-model",
+        prog="gdvb-scrub",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Redact host-identifying data from a socketscope model JSON.\n"
+            "Redact host-identifying data from a gdvb model JSON.\n"
             "Reads a model (stdin or a file), writes the scrubbed model to stdout:\n"
-            "  sockets-graph | scrub-model | render-graph-html.py > safe.html"
+            "  gdvb-sockets-graph | gdvb-scrub | gdvb-render > safe.html"
         ),
         epilog=(
             "scrub operations (all on by default; disable one with --no-<op>):\n  "
@@ -380,7 +380,7 @@ def main():
     if src == "-" and sys.stdin.isatty():
         ap.error(
             "no input: pipe a model JSON or pass a file. e.g.\n"
-            "  sockets-graph | scrub-model | render-graph-html.py"
+            "  gdvb-sockets-graph | gdvb-scrub | gdvb-render"
         )
     try:
         if src == "-":
@@ -389,13 +389,13 @@ def main():
             with open(src, encoding="utf-8") as fh:
                 model = json.load(fh)
     except OSError as e:
-        raise SystemExit("scrub-model: cannot read %s: %s" % (src_label, e))
+        raise SystemExit("gdvb-scrub: cannot read %s: %s" % (src_label, e))
     except json.JSONDecodeError as e:
-        raise SystemExit("scrub-model: %s is not valid JSON: %s" % (src_label, e))
+        raise SystemExit("gdvb-scrub: %s is not valid JSON: %s" % (src_label, e))
 
     if not isinstance(model, dict) or not isinstance(model.get("nodes"), list):
         raise SystemExit(
-            "scrub-model: %s is not a graph model (need an object with a `nodes` array)"
+            "gdvb-scrub: %s is not a graph model (need an object with a `nodes` array)"
             % src_label
         )
 
@@ -406,7 +406,7 @@ def main():
     sys.stdout.write("\n")
     disabled = [op for op in ALL_OPS if op not in enabled]
     print(
-        "scrub-model: %d op(s) applied%s"
+        "gdvb-scrub: %d op(s) applied%s"
         % (len(enabled), (" (disabled: %s)" % ", ".join(disabled)) if disabled else ""),
         file=sys.stderr,
     )

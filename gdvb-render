@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""socketscope - render a graph model JSON into an interactive HTML viewer.
+"""gdvb - render a graph model JSON into an interactive HTML viewer.
 
 Reads ONE generic graph model (a JSON object with at least `nodes` and `edges`)
 from a file or stdin and writes ONE self-contained, offline, interactive HTML
 force-directed graph for exploring it. The model is produced by a *generator*
-(this repo ships sockets-graph, dirtree-graph, cmake-graph); the viewer
+(this repo ships gdvb-sockets-graph, gdvb-dirtree-graph, gdvb-cmake-graph); the viewer
 is domain-agnostic and imports nothing generator-specific.
 
 Stdlib only - no external Python packages. Cytoscape.js is vendored inline
@@ -12,8 +12,8 @@ Stdlib only - no external Python packages. Cytoscape.js is vendored inline
 in any browser with no network access.
 
 Usage:
-    sudo sockets-graph | python3 render-graph-html.py > sockets.html
-    python3 render-graph-html.py model.json -o view        # -> view.html
+    sudo gdvb-sockets-graph | python3 gdvb-render > sockets.html
+    python3 gdvb-render model.json -o view        # -> view.html
 """
 import os
 import sys
@@ -92,7 +92,7 @@ class Viewer:
         def log(msg=""):
             print(msg, file=sys.stderr)
 
-        log("socketscope  -  typed directed-graph snapshot")
+        log("gdvb  -  typed directed-graph snapshot")
         log("  host:      %s" % meta.get("host", "?"))
         log("  captured:  %s" % meta.get("captured", "?"))
         if "root_path" in meta:
@@ -150,9 +150,9 @@ class Viewer:
         if src == "-" and sys.stdin.isatty():
             ap.error(
                 "no input: pipe a model JSON or pass a file. e.g.\n"
-                "  sudo sockets-graph | render-graph-html.py\n"
-                "  cmake-graph build  | render-graph-html.py > cmake.html\n"
-                "  render-graph-html.py model.json -o view"
+                "  sudo gdvb-sockets-graph | gdvb-render\n"
+                "  gdvb-cmake-graph build  | gdvb-render > cmake.html\n"
+                "  gdvb-render model.json -o view"
             )
         try:
             if src == "-":
@@ -166,7 +166,7 @@ class Viewer:
             ap.error("%s is not valid JSON: %s" % (src_label, e))
 
         # Only nodes + edges are required, so render works for any directed graph
-        # (a socketscope capture, or a hand-made one with no types/meta/style).
+        # (a gdvb capture, or a hand-made one with no types/meta/style).
         if not isinstance(model, dict) or not all(
             isinstance(model.get(k), list) for k in ("nodes", "edges")
         ):
@@ -193,10 +193,10 @@ class Viewer:
     @staticmethod
     def main():
         ap = argparse.ArgumentParser(
-            prog="socketscope",
+            prog="gdvb",
             formatter_class=argparse.RawDescriptionHelpFormatter,
             description=(
-                "socketscope — render a graph model JSON into a single self-contained,\n"
+                "gdvb — render a graph model JSON into a single self-contained,\n"
                 "offline, interactive HTML viewer. Reads the model from a file or stdin\n"
                 "and writes HTML to stdout (or -o NAME.html). Stdlib only; nothing to\n"
                 "install (Cytoscape.js is vendored inline)."
@@ -204,14 +204,14 @@ class Viewer:
             epilog=(
                 "The model comes from a generator that emits the shared JSON shape\n"
                 "({nodes, edges, ...}); the viewer is domain-agnostic:\n"
-                "  sudo sockets-graph | render-graph-html.py        sockets + processes\n"
-                "  dirtree-graph ~/p  | render-graph-html.py        a directory tree\n"
-                "  cmake-graph build  | render-graph-html.py        CMake targets/deps\n"
+                "  sudo gdvb-sockets-graph | gdvb-render        sockets + processes\n"
+                "  gdvb-dirtree-graph ~/p  | gdvb-render        a directory tree\n"
+                "  gdvb-cmake-graph build  | gdvb-render        CMake targets/deps\n"
                 "\n"
                 "examples:\n"
-                "  cmake-graph build | render-graph-html.py > cmake.html\n"
-                "  render-graph-html.py model.json -o view        -> view.html\n"
-                "  render-graph-html.py model.json > view.html"
+                "  gdvb-cmake-graph build | gdvb-render > cmake.html\n"
+                "  gdvb-render model.json -o view        -> view.html\n"
+                "  gdvb-render model.json > view.html"
             ),
         )
         ap.add_argument(
@@ -231,7 +231,7 @@ class Viewer:
         args = ap.parse_args()
         Viewer.do_render(args, ap)
 
-    HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>socketscope</title>
+    HTML_TEMPLATE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>gdvb</title>
 <style>
  html,body{margin:0;height:100%;font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#fbfbfd;color:#222}
  #wrap{display:flex;height:100vh}#net{flex:1;background:#fbfbfd}
@@ -337,14 +337,14 @@ const els=NODES.map(n=>({data:Object.assign(norm(n),{id:n.id,label:n.label||n.id
     col:ncolor((NODES.find(n=>n.id===e.source)||{}).classes)||"#9aa0a6",tip:e.label||""}),classes:cls2str(e.classes)})));
 // Styling is layered, applied in order:
 //  1) BASE_STYLE - baked here, DOMAIN-AGNOSTIC: structure only (shape, labels,
-//     sizing, arcs, arrows, neutral greys). No type colors, no socketscope-specific
+//     sizing, arcs, arrows, neutral greys). No type colors, no gdvb-specific
 //     fields, so ANY directed graph renders as readable labelled rectangles.
 //  2) CLASS_STYLE - generated from node_classes/edge_classes at runtime: one rule
 //     per class painting its color (node fill / edge line). The catalogs are thus
 //     the SINGLE source for both the legend swatch and the element color, so they
 //     can't drift. Multi-membership composes (a node in two classes gets both
 //     rules). (Empty when a graph supplies no class catalogs.)
-//  3) DATA.style - the snapshot's own rules. A socketscope capture prepopulates this
+//  3) DATA.style - the snapshot's own rules. A gdvb capture prepopulates this
 //     with its domain styling (listen border, tree/io edge colors); a generic graph
 //     usually has none.
 //  4) INTERACTION_STYLE - viewer-owned (selected/chain/pinned/faded), appended last
@@ -694,7 +694,7 @@ str.oninput=()=>{applyForces(+str.value/100);reheat(0);};
 const elbl=document.getElementById("elabels");
 const al=()=>cy.batch(()=>cy.edges().forEach(x=>x.toggleClass("showlabel",elbl.checked)));
 elbl.onchange=al;al();
-document.title=META.title||"socketscope";
+document.title=META.title||"gdvb";
 {const tl=document.getElementById("title");if(META.title)tl.textContent=META.title;else tl.style.display="none";}
 document.getElementById("host").textContent=[META.host,META.captured,META.subtitle].filter(Boolean).join("  ·  ");
 // Edge-style key is data-driven (DATA.edge_key, plain-text lines via textContent);

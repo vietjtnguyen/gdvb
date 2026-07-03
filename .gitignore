@@ -1,6 +1,6 @@
 # Generated snapshots (contain a picture of the host's processes/sockets/files — keep local)
-socketscope-*.html
-socketscope-*.json
+gdvb-*.html
+gdvb-*.json
 /sockets.html
 
 # Generated single-file bundles (`just bundle <generator>`)

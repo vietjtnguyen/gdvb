@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""dirtree-graph - emit a directory tree as a graph model JSON.
+"""gdvb-dirtree-graph - emit a directory tree as a graph model JSON.
 
-A standalone generator for the socketscope viewer. It walks a directory (or reads
+A standalone generator for the gdvb viewer. It walks a directory (or reads
 an explicit path list on stdin) and prints ONE JSON graph model to stdout - the
-same generic model socketscope's `sockets` and `cmake-graph` produce. It does
-NOT import render-graph-html.py; the JSON model is the only contract. Pipe it to the
+same generic model gdvb's `sockets` and `gdvb-cmake-graph` produce. It does
+NOT import gdvb-render; the JSON model is the only contract. Pipe it to the
 viewer:
 
-    dirtree-graph ~/project | render-graph-html.py > tree.html
+    gdvb-dirtree-graph ~/project | gdvb-render > tree.html
 
 Nodes are directories, files, and symlinks (executables also carry an
 `executable` class); edges are parent->child containment plus a distinct
@@ -56,7 +56,7 @@ EDGE_CLASSES = [
     # "Siblings" traversal has an edge to flood along; hidden by default since
     # it's not a real filesystem relationship and would otherwise clutter the
     # skeleton. Traversal still works while hidden - only node visibility
-    # gates the walk (see render-graph-html.py's runTraversal).
+    # gates the walk (see gdvb-render's runTraversal).
     {
         "id": "sibling",
         "label": "↔ sibling (same parent)",
@@ -336,7 +336,7 @@ def build_walk(root, max_depth=None, max_entries=2000, follow=False, no_files=Fa
     try:
         root_lst = os.lstat(root)
     except OSError as e:
-        raise SystemExit("dirtree-graph: cannot stat %s: %s" % (root, e))
+        raise SystemExit("gdvb-dirtree-graph: cannot stat %s: %s" % (root, e))
     nodes.append(_node(root, root_lst, "dir", is_root=True))
     node_ids.add(_nid(root))
 
@@ -391,7 +391,7 @@ def build_walk(root, max_depth=None, max_entries=2000, follow=False, no_files=Fa
 
 def build_paths(lines, base=None, max_entries=2000, no_files=False):
     """Build the model from an explicit newline-separated path list on stdin
-    (e.g. `git ls-files | dirtree-graph -`). Directory ancestors are
+    (e.g. `git ls-files | gdvb-dirtree-graph -`). Directory ancestors are
     synthesized so the listed paths connect into one tree; *which* paths appear is
     left entirely to the upstream tool (git, find, fd, ...), so this carries no
     ignore/VCS logic. Relative entries resolve against `base` (e.g. a repo root) --
@@ -407,7 +407,7 @@ def build_paths(lines, base=None, max_entries=2000, no_files=False):
         )
     paths = sorted(paths)
     if not paths:
-        raise SystemExit("dirtree-graph: no paths read from stdin")
+        raise SystemExit("gdvb-dirtree-graph: no paths read from stdin")
     # With an explicit base, root the tree there; otherwise auto-root at the
     # deepest directory common to every input path.
     if base:
@@ -435,7 +435,7 @@ def build_paths(lines, base=None, max_entries=2000, no_files=False):
     try:
         add(root, os.lstat(root), "dir", is_root=True)
     except OSError as e:
-        raise SystemExit("dirtree-graph: cannot stat %s: %s" % (root, e))
+        raise SystemExit("gdvb-dirtree-graph: cannot stat %s: %s" % (root, e))
 
     for p in paths:
         rel = os.path.relpath(p, root)
@@ -461,11 +461,11 @@ def build_paths(lines, base=None, max_entries=2000, no_files=False):
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="dirtree-graph",
+        prog="gdvb-dirtree-graph",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Walk a directory tree (or read a path list on stdin) and emit a graph\n"
-            "model JSON for the socketscope viewer. Pipe to: render-graph-html.py"
+            "model JSON for the gdvb viewer. Pipe to: gdvb-render"
         ),
         epilog=(
             "Pass '-' as the path to read a newline-separated path list from stdin\n"
@@ -473,9 +473,9 @@ def main():
             "so the listed paths connect into one tree. Filtering (gitignore, etc.)\n"
             "is delegated to the upstream tool. Relative entries resolve against -C\n"
             "(default: cwd) -- e.g. `git ls-files` prints repo-root-relative paths:\n"
-            "  dirtree-graph ~/project | render-graph-html.py > tree.html\n"
-            "  git -C ~/p ls-files | dirtree-graph - -C ~/p | render-graph-html.py\n"
-            "  find . -name '*.py' | dirtree-graph - | render-graph-html.py"
+            "  gdvb-dirtree-graph ~/project | gdvb-render > tree.html\n"
+            "  git -C ~/p ls-files | gdvb-dirtree-graph - -C ~/p | gdvb-render\n"
+            "  find . -name '*.py' | gdvb-dirtree-graph - | gdvb-render"
         ),
     )
     ap.add_argument(
@@ -543,7 +543,7 @@ def main():
     sys.stdout.write("\n")
     c = model["meta"]["counts"]
     print(
-        "dirtree-graph: %s — %d nodes, %d edges%s"
+        "gdvb-dirtree-graph: %s — %d nodes, %d edges%s"
         % (
             model["meta"]["title"],
             c["nodes"],

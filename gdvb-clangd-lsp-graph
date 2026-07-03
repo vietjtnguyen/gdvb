@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""clangd-lsp-graph - emit a symbol call graph for a C/C++ project via clangd.
+"""gdvb-clangd-lsp-graph - emit a symbol call graph for a C/C++ project via clangd.
 
-A standalone generator for the socketscope viewer. It is NOT a persistent server:
-it spins up clangd just long enough to answer lsp-graph's queries, then exits.
+A standalone generator for the gdvb viewer. It is NOT a persistent server:
+it spins up clangd just long enough to answer gdvb-lsp-graph's queries, then exits.
 Concretely: (1) autodetect compile_commands.json under the project (or
 <project>/build*), (2) spawn clangd over its own stdio (clangd only speaks stdio -
 no socket mode), (3) bridge that stdio to a fresh Unix domain socket, since
-lsp-graph is a transport-agnostic LSP client that expects to connect to one (see
-lsp-graph's own docstring for why that split exists), (4) run lsp-graph with the
+gdvb-lsp-graph is a transport-agnostic LSP client that expects to connect to one (see
+gdvb-lsp-graph's own docstring for why that split exists), (4) run gdvb-lsp-graph with the
 same arguments plus --connect pointed at the socket, streaming its stdout - the
 JSON model - through as this script's own stdout, (5) tear everything down. Pipe
-the result to render-graph-html.py, same as any generator:
+the result to gdvb-render, same as any generator:
 
-    clangd-lsp-graph <project> --file src/foo.cpp | render-graph-html.py > calls.html
-    clangd-lsp-graph <project> --seed planPath --depth 4 | render-graph-html.py
-    clangd-lsp-graph <project> --all --max-nodes 5000 | render-graph-html.py
+    gdvb-clangd-lsp-graph <project> --file src/foo.cpp | gdvb-render > calls.html
+    gdvb-clangd-lsp-graph <project> --seed planPath --depth 4 | gdvb-render
+    gdvb-clangd-lsp-graph <project> --all --max-nodes 5000 | gdvb-render
 
-All lsp-graph flags (--seed/--file/--all/--exclude-dir/--depth/--direction/
+All gdvb-lsp-graph flags (--seed/--file/--all/--exclude-dir/--depth/--direction/
 --max-nodes/--type-depth/--index-timeout) pass straight through untouched - run
-`lsp-graph --help` for those. This script only adds --compile-commands and
+`gdvb-lsp-graph --help` for those. This script only adds --compile-commands and
 --clangd (the executable to run). Stdlib only.
 """
 import os
@@ -46,14 +46,14 @@ def find_compile_commands(project, override):
 
 
 def find_lsp_graph():
-    on_path = shutil.which("lsp-graph")
+    on_path = shutil.which("gdvb-lsp-graph")
     if on_path:
         return [on_path]
-    sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lsp-graph")
+    sibling = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gdvb-lsp-graph")
     if os.path.exists(sibling):
         return [sys.executable, sibling]
     raise SystemExit(
-        "clangd-lsp-graph: cannot find lsp-graph (not on PATH, not next to this script)"
+        "gdvb-clangd-lsp-graph: cannot find gdvb-lsp-graph (not on PATH, not next to this script)"
     )
 
 
@@ -92,19 +92,19 @@ def _sock_to_pipe(conn, pipe):
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="clangd-lsp-graph",
+        prog="gdvb-clangd-lsp-graph",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
-            "Run clangd just long enough to answer lsp-graph's queries for a\n"
-            "C/C++ project, then exit. Pipe to: render-graph-html.py"
+            "Run clangd just long enough to answer gdvb-lsp-graph's queries for a\n"
+            "C/C++ project, then exit. Pipe to: gdvb-render"
         ),
         epilog=(
             "examples:\n"
-            "  clangd-lsp-graph proj --file src/foo.cpp | render-graph-html.py > c.html\n"
-            "  clangd-lsp-graph proj --seed planPath --depth 4 | render-graph-html.py\n"
-            "  clangd-lsp-graph proj --all --max-nodes 5000 | render-graph-html.py\n"
+            "  gdvb-clangd-lsp-graph proj --file src/foo.cpp | gdvb-render > c.html\n"
+            "  gdvb-clangd-lsp-graph proj --seed planPath --depth 4 | gdvb-render\n"
+            "  gdvb-clangd-lsp-graph proj --all --max-nodes 5000 | gdvb-render\n"
             "\nall other flags (--seed/--file/--all/--depth/...) pass through to\n"
-            "lsp-graph unchanged - see `lsp-graph --help`."
+            "gdvb-lsp-graph unchanged - see `gdvb-lsp-graph --help`."
         ),
     )
     ap.add_argument("project", help="project root")
@@ -124,7 +124,7 @@ def main():
 
     project = os.path.abspath(args.project)
     if not os.path.isdir(project):
-        raise SystemExit("clangd-lsp-graph: not a directory: %s" % args.project)
+        raise SystemExit("gdvb-clangd-lsp-graph: not a directory: %s" % args.project)
 
     cc = find_compile_commands(project, args.compile_commands)
     cmd = [args.clangd, "--background-index", "--log=error"]
@@ -132,7 +132,7 @@ def main():
         cmd.append("--compile-commands-dir=" + cc)
     else:
         sys.stderr.write(
-            "clangd-lsp-graph: warning: no compile_commands.json found under %s\n"
+            "gdvb-clangd-lsp-graph: warning: no compile_commands.json found under %s\n"
             % project
         )
 
@@ -147,9 +147,9 @@ def main():
             bufsize=0,
         )
     except FileNotFoundError:
-        raise SystemExit("clangd-lsp-graph: clangd not found: %s" % cmd[0])
+        raise SystemExit("gdvb-clangd-lsp-graph: clangd not found: %s" % cmd[0])
 
-    tmpdir = tempfile.mkdtemp(prefix="clangd-lsp-graph-")
+    tmpdir = tempfile.mkdtemp(prefix="gdvb-clangd-lsp-graph-")
     sock_path = os.path.join(tmpdir, "lsp.sock")
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     rc = 1
@@ -168,7 +168,7 @@ def main():
         except socket.timeout:
             client.terminate()
             raise SystemExit(
-                "clangd-lsp-graph: lsp-graph never connected to the socket"
+                "gdvb-clangd-lsp-graph: gdvb-lsp-graph never connected to the socket"
             )
 
         threads = [
@@ -183,9 +183,9 @@ def main():
             t.start()
 
         # Piped and relayed through sys.stdout here (not stdout=None/inherit):
-        # inherit would hand lsp-graph the real OS fd 1 directly, bypassing
+        # inherit would hand gdvb-lsp-graph the real OS fd 1 directly, bypassing
         # contextlib.redirect_stdout entirely - which is exactly what a bundled
-        # build needs to capture the model JSON to render it. lsp-graph writes
+        # build needs to capture the model JSON to render it. gdvb-lsp-graph writes
         # its model once, at the very end, so a single blocking read is exact.
         output = client.stdout.read()
         rc = client.wait()

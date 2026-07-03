@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-"""lsp-graph - emit a symbol call graph from a language server, as JSON.
+"""gdvb-lsp-graph - emit a symbol call graph from a language server, as JSON.
 
-A standalone LSP CLIENT for the socketscope viewer: it speaks JSON-RPC over an
+A standalone LSP CLIENT for the gdvb viewer: it speaks JSON-RPC over an
 already-connected duplex byte stream to WHATEVER language server is on the other
 end, walks the CALL HIERARCHY outward from one or more seed symbols, and prints
 ONE JSON graph model to stdout - the same generic model the other generators
-produce. It does NOT import render-graph-html.py; the JSON model is the only
+produce. It does NOT import gdvb-render; the JSON model is the only
 contract.
 
-lsp-graph does not know how to start a language server, and deliberately so: LSP
+gdvb-lsp-graph does not know how to start a language server, and deliberately so: LSP
 only specifies the JSON-RPC message protocol, not a transport - servers each pick
 their own (stdio-only, a TCP/Unix socket, node-ipc, ...), and getting one running
 with the right flags (a C++ project's compile_commands.json, a Python venv, ...)
 is a different problem from turning its responses into a graph. That's the job of
-a per-server GENERATOR wrapper (e.g. `clangd-lsp-graph`, `pyright-lsp-graph`):
+a per-server GENERATOR wrapper (e.g. `gdvb-clangd-lsp-graph`, `gdvb-pyright-lsp-graph`):
 each spins up its server, bridges it to a Unix domain socket, and calls this with
---connect pointed at it - lsp-graph itself never spawns a process. Use those
-wrappers directly; only reach for lsp-graph --connect yourself if you already have
+--connect pointed at it - gdvb-lsp-graph itself never spawns a process. Use those
+wrappers directly; only reach for gdvb-lsp-graph --connect yourself if you already have
 a server listening on a socket some other way.
 
-    clangd-lsp-graph <project> --file src/foo.cpp | render-graph-html.py > calls.html
-    pyright-lsp-graph <project> --all --max-nodes 5000 | render-graph-html.py > c.html
-    lsp-graph <project> --connect /tmp/lsp.sock --seed planPath   # low-level, direct
+    gdvb-clangd-lsp-graph <project> --file src/foo.cpp | gdvb-render > calls.html
+    gdvb-pyright-lsp-graph <project> --all --max-nodes 5000 | gdvb-render > c.html
+    gdvb-lsp-graph <project> --connect /tmp/lsp.sock --seed planPath   # low-level, direct
 
 The graph is built from `callHierarchy/incomingCalls` (who calls X) by default,
 walking UP the call graph from the seeds - the impact-analysis direction ("what
@@ -171,7 +171,7 @@ FORCE_STRUCTURES = [
 
 # ---------------------------------------------------------------------------
 # Minimal LSP client over an already-connected duplex socket (JSON-RPC,
-# Content-Length framing). lsp-graph never spawns the server itself - see the
+# Content-Length framing). gdvb-lsp-graph never spawns the server itself - see the
 # module docstring for why that's a wrapper's job, not this file's.
 # ---------------------------------------------------------------------------
 class LSP:
@@ -195,7 +195,7 @@ class LSP:
         if not self._warned:
             self._warned = True
             sys.stderr.write(
-                "lsp-graph: warning: the language server connection closed "
+                "gdvb-lsp-graph: warning: the language server connection closed "
                 "unexpectedly (some servers, e.g. clangd's typeHierarchy, have "
                 "known crash bugs on certain code); continuing with what was "
                 "already collected\n"
@@ -349,7 +349,7 @@ def _flatten_with_parent(symbols, parent, out):
         _flatten_with_parent(s.get("children"), s, out)
 
 
-# File extension -> LSP languageId. lsp-graph is LSP-generic (any server speaking
+# File extension -> LSP languageId. gdvb-lsp-graph is LSP-generic (any server speaking
 # textDocument/documentSymbol + callHierarchy works); this table is what lets
 # --all and didOpen work across languages instead of assuming C++.
 LANG_BY_EXT = {
@@ -376,7 +376,7 @@ _SOURCE_EXTS = tuple(LANG_BY_EXT)
 
 def _shebang_lang(path):
     """For an extensionless script (this project's OWN convention: kebab-case,
-    no .py - see lsp-graph itself), sniff the shebang for a known interpreter,
+    no .py - see gdvb-lsp-graph itself), sniff the shebang for a known interpreter,
     since extension-based language_id() has nothing to go on."""
     try:
         with open(path, "rb") as fh:
@@ -481,7 +481,7 @@ def build_callgraph(
             kick = [cand[0]]
     for p in kick:
         open_file(p)
-    sys.stderr.write("lsp-graph: waiting for background index...\n")
+    sys.stderr.write("gdvb-lsp-graph: waiting for background index...\n")
     lsp.wait_for_ready(index_timeout)
     time.sleep(0.5)
 
@@ -690,7 +690,7 @@ def build_callgraph(
     seeds = []
     for path in seed_files:
         if not os.path.exists(path):
-            sys.stderr.write("lsp-graph: no such file: %s\n" % path)
+            sys.stderr.write("gdvb-lsp-graph: no such file: %s\n" % path)
             continue
         open_file(path)
         syms = []
@@ -732,7 +732,7 @@ def build_callgraph(
     if seed_all:
         files = discover_source_files(root, exclude_dirs)
         sys.stderr.write(
-            "lsp-graph: --all: scanning %d source file(s)...\n" % len(files)
+            "gdvb-lsp-graph: --all: scanning %d source file(s)...\n" % len(files)
         )
         for path in files:
             scan_file(path)
@@ -758,7 +758,7 @@ def build_callgraph(
 
     if not seeds and not bulk_items:
         raise SystemExit(
-            "lsp-graph: no seed symbols resolved (check --seed/--file/--all)"
+            "gdvb-lsp-graph: no seed symbols resolved (check --seed/--file/--all)"
         )
 
     # BFS up the caller graph via incomingCalls. Explicit seeds get the red
@@ -869,21 +869,21 @@ def assemble(nodes, edges, root, seeds_desc, truncated):
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="lsp-graph",
+        prog="gdvb-lsp-graph",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Low-level LSP client: connect to an ALREADY-RUNNING language server\n"
             "over a Unix domain socket and emit a call-graph model JSON for the\n"
-            "socketscope viewer. Normally you don't run this directly - use a\n"
-            "per-server wrapper (clangd-lsp-graph, pyright-lsp-graph) that starts\n"
+            "gdvb viewer. Normally you don't run this directly - use a\n"
+            "per-server wrapper (gdvb-clangd-lsp-graph, gdvb-pyright-lsp-graph) that starts\n"
             "the server, bridges it to a socket, and calls this for you."
         ),
         epilog=(
             "examples (normal usage - via a wrapper):\n"
-            "  clangd-lsp-graph proj --file src/foo.cpp | render-graph-html.py > c.html\n"
-            "  pyright-lsp-graph proj --all --max-nodes 5000 | render-graph-html.py\n"
+            "  gdvb-clangd-lsp-graph proj --file src/foo.cpp | gdvb-render > c.html\n"
+            "  gdvb-pyright-lsp-graph proj --all --max-nodes 5000 | gdvb-render\n"
             "\ndirect usage (already have a server on a socket):\n"
-            "  lsp-graph proj --connect /tmp/lsp.sock --seed planPath --depth 4\n"
+            "  gdvb-lsp-graph proj --connect /tmp/lsp.sock --seed planPath --depth 4\n"
         ),
     )
     ap.add_argument("project", help="project root")
@@ -892,7 +892,7 @@ def main():
         required=True,
         metavar="PATH",
         help="Unix domain socket path an already-running language server is "
-        "reachable on (see wrapper scripts, e.g. clangd-lsp-graph)",
+        "reachable on (see wrapper scripts, e.g. gdvb-clangd-lsp-graph)",
     )
     ap.add_argument(
         "--seed",
@@ -972,7 +972,7 @@ def main():
     try:
         sock.connect(args.connect)
     except OSError as e:
-        raise SystemExit("lsp-graph: cannot connect to %s: %s" % (args.connect, e))
+        raise SystemExit("gdvb-lsp-graph: cannot connect to %s: %s" % (args.connect, e))
 
     lsp = LSP(sock)
     try:
@@ -992,7 +992,7 @@ def main():
             },
         )
         if ok is None:
-            raise SystemExit("lsp-graph: server failed to initialize")
+            raise SystemExit("gdvb-lsp-graph: server failed to initialize")
         lsp.notify("initialized", {})
         has_type_hierarchy = bool(
             (ok.get("capabilities") or {}).get("typeHierarchyProvider")
@@ -1029,7 +1029,7 @@ def main():
     sys.stdout.write("\n")
     c = model["meta"]["counts"]
     sys.stderr.write(
-        "lsp-graph: %s — %d nodes, %d edges%s\n"
+        "gdvb-lsp-graph: %s — %d nodes, %d edges%s\n"
         % (
             model["meta"]["title"],
             c["nodes"],

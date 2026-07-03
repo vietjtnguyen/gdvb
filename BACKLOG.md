@@ -1,4 +1,4 @@
-# socketscope — backlog
+# gdvb — backlog
 
 Running list of ideas. Not commitments, not prioritized beyond rough grouping.
 Check things off as they land.
@@ -8,11 +8,11 @@ Check things off as they land.
 - [x] Ship as a single standalone script (no Python packaging) with stdlib only
 - [x] User-centric `README.md`
 - [x] Clean up `--help` text (examples, grouped flags, type-id list)
-- [x] A real name — **socketscope** (was `socket_graph.py`)
+- [x] A real name — **gdvb** (was `socket_graph.py`)
 - [x] Better HTML `<title>`
 - [x] "Download data (JSON)" button in the viewer
 - [x] CLI JSON output (`--json`), `--no-html`, timestamped default base name
-      (`socketscope-<ts>`), `-o -` to stdout, summary to stderr
+      (`gdvb-<ts>`), `-o -` to stdout, summary to stderr
 - [x] `render` subcommand: rebuild HTML from a saved snapshot JSON without
       polling the system (stdin/file in, stdout/`-o` out)
 - [x] Layered styling: baked **domain-agnostic** base (structure only) + per-type
@@ -21,7 +21,7 @@ Check things off as they land.
       prepopulated by captures) + viewer-owned interaction states
 - [x] `render` works for **any directed graph** — only `nodes`+`edges` required;
       `types`/`meta`/`style` optional, labels fall back to `id` (so the viewer
-      renders a plain tree/DAG JSON, not just socketscope captures)
+      renders a plain tree/DAG JSON, not just gdvb captures)
 - [x] Default type visibility is data-driven (`"hidden": true` per `types[]` entry,
       not hardcoded); the "Edge style" key text comes from a top-level `edge_key`
 - [x] Generalize "Trace chain": generic **Select** tools (All/None/Invert/Grow/
@@ -34,7 +34,7 @@ Check things off as they land.
       block, each emphasizes an edge selector; spring weighting unified to one
       per-edge weight; built-in `spread` + `distance from selected`. This was the last
       domain-coupled viewer feature — the viewer is now fully generic over the JSON.
-- [x] **`dirtree-graph` generator** — a non-socket model generator that walks a
+- [x] **`gdvb-dirtree-graph` generator** — a non-socket model generator that walks a
       directory tree (nodes = files/dirs/symlinks, edges = containment + distinct
       symlink→target edges) into the same generic model, proving the viewer is
       domain-agnostic. Carries dirtree-specific `style` (exec files, dashed symlinks),
@@ -42,14 +42,14 @@ Check things off as they land.
       and per-node `size`/`mtime`/`ctime`/`user`/`group`/`perms` metadata. Passing `-`
       reads a newline-separated path list from stdin (ancestors synthesized to connect
       them), so filtering — gitignore, etc. — is delegated to the upstream tool
-      (`git ls-files | dirtree-graph -`). Originally a `dirtree` subcommand of
-      render-graph-html.py; split out into a standalone script once the "model is the seam"
+      (`git ls-files | gdvb-dirtree-graph -`). Originally a `dirtree` subcommand of
+      gdvb-render; split out into a standalone script once the "model is the seam"
       architecture was established.
-- [x] **`sockets-graph` generator + render-graph-html.py is now a pure viewer.** The socket
-      `/proc` capture (the original flagship) was extracted out of render-graph-html.py into a
-      standalone `sockets-graph` (filtering flags `--ignore*`, emits JSON to stdout),
-      completing the split: **every generator is now standalone** (`sockets-graph`,
-      `dirtree-graph`, `cmake-graph`) and **render-graph-html.py is just the renderer** —
+- [x] **`gdvb-sockets-graph` generator + gdvb-render is now a pure viewer.** The socket
+      `/proc` capture (the original flagship) was extracted out of gdvb-render into a
+      standalone `gdvb-sockets-graph` (filtering flags `--ignore*`, emits JSON to stdout),
+      completing the split: **every generator is now standalone** (`gdvb-sockets-graph`,
+      `gdvb-dirtree-graph`, `gdvb-cmake-graph`) and **gdvb-render is just the renderer** —
       it reads a model (stdin/file) and writes the HTML viewer, with no domain code. The
       output plumbing (`resolve_outputs`/`write_outputs`, the `--json`/`--no-html` flags)
       went away with capture; generators emit JSON only and the viewer's `-o` writes HTML.
@@ -69,13 +69,13 @@ Check things off as they land.
       are off) and an `other` catch-all for uncataloged classes. Also de-socketed the
       tree-label toggle (triage #1) — hiding tree-edge labels is now just hiding the
       `tree` edge class. Breaking change; v0, no back-compat.
-- [x] **`cmake-graph` generator** (standalone). Reads CMake's File API codemodel-v2
+- [x] **`gdvb-cmake-graph` generator** (standalone). Reads CMake's File API codemodel-v2
       from a configured build dir and emits the target/dependency/source graph as JSON,
-      piped to `render` — the first generator that lives *outside* render-graph-html.py,
+      piped to `render` — the first generator that lives *outside* gdvb-render,
       validating the "model is the seam" architecture. Targets classed by type; `link`
       (target→dep) + `source` (target→file) edges; source nodes start hidden. A real
       dependency DAG, so Topo BFS + "Depended on by" shine.
-- [x] **`lsp-graph` — LSP call-graph generator** (clangd-first, standalone). Drives a
+- [x] **`gdvb-lsp-graph` — LSP call-graph generator** (clangd-first, standalone). Drives a
       language server over stdio JSON-RPC (minimal `Content-Length` client), waits for the
       background index, resolves seeds (`--file` → a file's functions, `--seed NAME` →
       `workspace/symbol`), and walks `callHierarchy/incomingCalls` outward to `--depth`
@@ -94,7 +94,7 @@ Check things off as they land.
       one of its classes must be shown). Independent per legend (`nodeMatchAll`/
       `edgeMatchAll`), since node classes and edge classes have separate
       hide-sets (`visBy` takes the mode as a parameter).
-- [x] **`dirtree-graph`: "Siblings" traversal** — a new `edge.sibling` class
+- [x] **`gdvb-dirtree-graph`: "Siblings" traversal** — a new `edge.sibling` class
       chains each directory's children together in label order (O(k) edges per
       directory of k children, not a full O(k²) pairwise mesh); flooding from
       any one child along that chain reaches every sibling without walking
@@ -103,7 +103,7 @@ Check things off as they land.
       traversal-selectable while hidden, since only node visibility gates the
       walk. Synthesized once in `_finalize` from the existing containment
       edges, shared by both the walk and stdin path-list builders.
-- [x] **`scrub-model` — redaction filter for safe sharing.** A standalone stdin→stdout
+- [x] **`gdvb-scrub` — redaction filter for safe sharing.** A standalone stdin→stdout
       filter (NOT a generator — deliberately not named `*-graph`, which `bundle-all` globs)
       that reads a model JSON and redacts host-identifying data. Nine ops, all default-on,
       each `--no-<op>`: `ids` (rewrite node ids to opaque `n<i>` + remap edges — ids are
@@ -117,7 +117,7 @@ Check things off as they land.
       owner-pids from display — fake numbers were just distracting), `cmdline` (keep argv[0],
       drop args), `unix-paths` (keep
       basename, drop dir), `timestamp` (`meta.captured`→`"n/a"`), `inodes`. Format-aware for
-      socket captures (regexes keyed to `sockets-graph`'s `proc_*`/`sock_full` templates —
+      socket captures (regexes keyed to `gdvb-sockets-graph`'s `proc_*`/`sock_full` templates —
       a documented coupling), graceful on any other model. Closes this item.
 - [x] **"Mark" state + "Undirected BFS" static layout for choosing BFS roots** —
       a new `marked` Set, separate from `pinned`, flags selected nodes as layout
@@ -156,7 +156,7 @@ Check things off as they land.
       *nearest* mark. Leftover nodes unreachable from any mark (a separate
       component) still get their own arbitrary seed afterward. Verified against
       real data with two marks in the same tree.
-- [x] **`lsp-graph`: types as first-class nodes.** Every method/constructor
+- [x] **`gdvb-lsp-graph`: types as first-class nodes.** Every method/constructor
       discovered by the call-graph walk now also pulls in its **owning type**
       (class/struct/interface/enum) as its own node: a `member-of` edge from
       the callable to its type, found via `textDocument/documentSymbol`
@@ -177,7 +177,7 @@ Check things off as they land.
       because clangd's nested resolution only continues in the direction that
       reached each node (ancestors resolve further ancestors; it doesn't cross
       over to enumerate a common base's other descendants).
-- [x] **`lsp-graph --all`: whole-project seeding.** Seeds from every function/
+- [x] **`gdvb-lsp-graph --all`: whole-project seeding.** Seeds from every function/
       type in the project instead of a specific `--seed`/`--file`: walks every
       source file under the project root (`discover_source_files` - a directory
       walk, not `compile_commands.json`'s TU list, since headers - where most
@@ -196,8 +196,8 @@ Check things off as they land.
       stderr warning instead of crashing. Also reordered type-hierarchy
       expansion to run only *after* the call graph is fully built, so a
       typeHierarchy crash can cost inheritance edges but never the calls.
-- [x] **`lsp-graph` generalized to any LSP server; `clangd-lsp-graph` /
-      `pyright-lsp-graph` split out.** lsp-graph was clangd-first (hardcoded
+- [x] **`gdvb-lsp-graph` generalized to any LSP server; `gdvb-clangd-lsp-graph` /
+      `gdvb-pyright-lsp-graph` split out.** gdvb-lsp-graph was clangd-first (hardcoded
       `languageId: "cpp"`, a `*.cpp`-only kick-file glob, clangd-specific
       launch flags baked into `main()`). Reworked as a pure LSP *client*: it
       takes `--connect <unix-socket-path>` and never spawns a server at all.
@@ -212,15 +212,15 @@ Check things off as they land.
       (`SOCK_STREAM`) is fully bidirectional (unlike a `mkfifo` named pipe,
       which needs two for round-trip) before picking it as the transport.
       Split server orchestration into two new standalone generators,
-      `clangd-lsp-graph` and `pyright-lsp-graph` (deliberately separate
+      `gdvb-clangd-lsp-graph` and `gdvb-pyright-lsp-graph` (deliberately separate
       scripts, not one generic orchestrator + profile table): each spawns its
       server over stdio, bridges that stdio to a fresh Unix domain socket
       (accept one connection, relay both directions on threads), runs
-      `lsp-graph --connect <socket>` with the same arguments, streams its
+      `gdvb-lsp-graph --connect <socket>` with the same arguments, streams its
       stdout straight through, then tears everything down - not a persistent
       server, same "called with args, JSON pops out" contract as any
-      generator. `clangd-lsp-graph` owns compile_commands.json autodetection;
-      `pyright-lsp-graph` just runs `pyright-langserver --stdio`.
+      generator. `gdvb-clangd-lsp-graph` owns compile_commands.json autodetection;
+      `gdvb-pyright-lsp-graph` just runs `pyright-langserver --stdio`.
       Generalized along the way: `LANG_BY_EXT` + shebang-sniffing (for this
       project's own extensionless scripts) replace the hardcoded `cpp`
       languageId; `discover_source_files` covers any known extension; the
@@ -241,10 +241,10 @@ Check things off as they land.
       like `--seed`/`--file` already did. Verified end-to-end against both
       `orchard/` (clangd, exact node/edge-count regression match against the
       pre-refactor baseline) and a Python project via `pyright` in a venv,
-      including dogfooding lsp-graph against this repo's own extensionless
+      including dogfooding gdvb-lsp-graph against this repo's own extensionless
       scripts (confirms the shebang-sniffing path).
       Checked whether the two wrappers actually bundle (`just bundle
-      clangd-lsp-graph`) rather than assuming - they didn't at first, for two
+      gdvb-clangd-lsp-graph`) rather than assuming - they didn't at first, for two
       *compounding* reasons found by actually running the bundled output, not
       just reading the code: (1) `bundle_main.py` captures stdout via
       `contextlib.redirect_stdout`, which only swaps Python's `sys.stdout`
@@ -260,14 +260,14 @@ Check things off as they land.
       Reverified by actually running both bundled scopes end-to-end (clangd
       against `orchard/`, pyright against a scratch Python project) - both
       produce correct, offline-rendering HTML. Remaining, smaller gap: the
-      bundled artifact still needs a separate `lsp-graph` reachable at
+      bundled artifact still needs a separate `gdvb-lsp-graph` reachable at
       runtime (`PATH`, or copied alongside in `dist/`), since these wrappers
       orchestrate it as its own process rather than importing it - so they're
       not *fully* self-contained the way other bundles are, even though they
       now bundle and render correctly.
 - [x] **Generalized `just bundle <generator>`** — fuse the viewer + any generator into one
       self-contained runnable script in `dist/` (generate + render in a single invocation).
-      Pure shell: cats `render-graph-html.py` (now entirely under `class Viewer`, so it
+      Pure shell: cats `gdvb-render` (now entirely under `class Viewer`, so it
       contributes one top-level name) + the generator (catted last → its `main` is the sole
       one) + the `bundle_main.py` glue, then `black`. Formalized **generator conventions**
       (C1 main→JSON-on-stdout; C2 `-o`/`--out` reserved; C3 don't define `Viewer`; C4 errors
@@ -291,7 +291,7 @@ Check things off as they land.
 - [ ] **Big-endian** support: `/proc/net` addresses are host byte order, decoded
       assuming little-endian. Detect host endianness (e.g. `sys.byteorder`) and
       handle big-endian (s390x) so IP text is correct there too.
-- [ ] **Multi-host merge**: run `sockets-graph` on several machines and combine
+- [ ] **Multi-host merge**: run `gdvb-sockets-graph` on several machines and combine
       the snapshots into one model, with remote TCP endpoints stitched together
       across hosts (the same conceptual peer, seen from both sides). Leaning
       toward a separate **stitching script** run post-merge (matching remote
@@ -299,18 +299,18 @@ Check things off as they land.
       generation time — deconflicting the id namespace is only one small part
       of the actual stitching problem, so solve them together rather than
       pre-committing to an id scheme now.
-- [ ] **Make `clangd-lsp-graph`/`pyright-lsp-graph` bundles fully dependency-free.**
-      They now bundle and render correctly (`just bundle clangd-lsp-graph` produces
+- [ ] **Make `gdvb-clangd-lsp-graph`/`gdvb-pyright-lsp-graph` bundles fully dependency-free.**
+      They now bundle and render correctly (`just bundle gdvb-clangd-lsp-graph` produces
       working HTML — see the Done entry above), but the bundled artifact still needs
-      a separate `lsp-graph` reachable at runtime (`PATH` or copied alongside), since
+      a separate `gdvb-lsp-graph` reachable at runtime (`PATH` or copied alongside), since
       the wrapper orchestrates it as its own process rather than importing it. Planned
-      fix, not yet implemented: mirror how `render-graph-html.py` embeds Cytoscape.js
+      fix, not yet implemented: mirror how `gdvb-render` embeds Cytoscape.js
       (a blob baked in, decompressed at write time, so it needs zero network refs) —
-      have `just bundle` base64-encode `lsp-graph`'s source and inject it as a
+      have `just bundle` base64-encode `gdvb-lsp-graph`'s source and inject it as a
       `_LSP_GRAPH_SOURCE_B64` constant into the bundle (only for generators that
       reference `find_lsp_graph`, detected the same way the existing C1–C3 lint
       already greps the generator source — so unrelated bundles like
-      `sockets-graph-scope` stay exactly as lean as today). At runtime,
+      `gdvb-sockets-graph-scope` stay exactly as lean as today). At runtime,
       `find_lsp_graph()` checks for that constant first, and if present, writes it out
       to the same tmpdir already used (and already cleaned up) for the socket bridge,
       instead of falling through to the PATH/sibling-file lookup it uses standalone.
@@ -331,19 +331,19 @@ Check things off as they land.
       directly, and nested `<memberdef>`s giving containment). Confirmed this
       particular build did NOT enable `REFERENCED_BY_RELATION`/`REFERENCES_RELATION`
       (no `<references>`/`<referencedby>` elements present), so it has no call-graph
-      data — this generator would be structure-only, complementing lsp-graph's call
+      data — this generator would be structure-only, complementing gdvb-lsp-graph's call
       graphs rather than replacing them. Would need the same non-first-party
       filtering as the item below (confirmed the index mixes `orchard::Angle`
       alongside nlohmann/json's `adl_serializer` and `detail::actual_object_comparator`,
       since vendored headers sit directly under `src/`).
 - [ ] **Exclude non-first-party content (stdlib/vendored libs) generally**, not just
-      per-generator ad hoc: `lsp-graph --all` already skips common vendor directory
+      per-generator ad hoc: `gdvb-lsp-graph --all` already skips common vendor directory
       names by default plus `--exclude-dir`, but confirmed the same leak in Doxygen
       XML (see above) — a project's own namespace mixed in with a vendored
       single-header library's internals, with no structural distinction from the
       data alone (both just look like "a class/struct in some file"). Worth a
-      shared, consistent convention/mechanism across generators (dirtree-graph,
-      cmake-graph, lsp-graph, the future doxygen-graph) rather than reinventing
+      shared, consistent convention/mechanism across generators (gdvb-dirtree-graph,
+      gdvb-cmake-graph, gdvb-lsp-graph, the future doxygen-graph) rather than reinventing
       filtering per generator - e.g. a common notion of "project root vs. everything
       under it" plus name-based heuristics, or leaning on each ecosystem's own
       first-party marker where one exists (a compile_commands.json entry's directory
@@ -377,6 +377,10 @@ Check things off as they land.
 - [ ] **Diff two snapshots** to highlight what changed since last capture.
 - [ ] Optional dark mode (note: the current light theme is an intentional design
       choice — only if there's demand).
+- [ ] A common workflow is to isolate sets manually and run the static layouts
+      to organize sets of interest. Afterwards it would be nice to leave those
+      alone but run static layouts on the rest. We can use the pin state for
+      this so that static layout ignores pinned units.
 
 ## Sharing / packaging
 
@@ -391,7 +395,7 @@ Check things off as they land.
 - [ ] `CHANGELOG.md` + version string.
 - [ ] **Document the JSON schema** (`SCHEMA.md`): the generic typed-directed-graph
       model, so other tools can produce/consume it. This is *the* ecosystem seam
-      (generators emit JSON and pipe to `render`; they don't import render-graph-html.py).
+      (generators emit JSON and pipe to `render`; they don't import gdvb-render).
       Deferred until the model settles — the upcoming multi-class `node_classes`/
       `edge_classes` refactor will reshape it, so writing it now is premature (a first
       draft was removed for that reason).
