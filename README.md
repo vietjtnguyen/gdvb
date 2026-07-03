@@ -119,8 +119,11 @@ language server and emit a **call graph**, by walking the call hierarchy
 gdvb-lsp-graph itself is a pure LSP *client* — LSP only specifies the JSON-RPC message
 protocol, not how to start a server or which transport it uses, so gdvb-lsp-graph never
 spawns one; it just connects to an already-running server over a Unix domain socket
-(`--connect`). Starting the right server with the right flags is a different problem,
-owned by a small per-server **generator wrapper** — run those, not gdvb-lsp-graph directly:
+(`--connect`). If you already have a server reachable that way — e.g. one you're
+running for an editor, exposed over a socket some other way — you can call
+gdvb-lsp-graph directly. Usually you don't, though: starting the right server with
+the right flags is a different problem, owned by a small per-server **generator
+wrapper**, which is what most people should reach for:
 
 ```bash
 gdvb-clangd-lsp-graph proj --file src/foo.cpp | gdvb-render > calls.html    # C/C++, seed: a file's functions
@@ -256,11 +259,13 @@ them directly runnable, e.g. `./gdvb-sockets-graph`):
 
 - **generators** are `{subject}-graph`: `gdvb-sockets-graph`, `gdvb-dirtree-graph`,
   `gdvb-cmake-graph`, `gdvb-clangd-lsp-graph`, `gdvb-pyright-lsp-graph`.
-- **bundles** are `{subject}-graph-scope` — the generator and viewer fused into one
-  ("-scope" as in *gdvb*). `just bundle gdvb-sockets-graph` → `dist/gdvb-sockets-graph-scope`.
+- **bundles** are `dist/gdvb-{subject}` — the generator and viewer fused into one.
+  `just bundle gdvb-sockets-graph` → `dist/gdvb-sockets`.
 - the **viewer** is `gdvb-render`.
-- `gdvb-lsp-graph` is the odd one out: a shared LSP-protocol **client**, not itself a
-  generator you'd normally run (see "LSP client vs. server orchestration" below).
+- `gdvb-lsp-graph` is the odd one out: a shared LSP-protocol **client**. It's fully
+  usable on its own if you already have a server reachable over a socket — it just
+  isn't the thing most people reach for, since it doesn't start a server itself
+  (see "LSP client vs. server orchestration" below).
 
 ### Generator conventions
 
