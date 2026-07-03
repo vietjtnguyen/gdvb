@@ -2,7 +2,7 @@
 
 Running list of ideas — not commitments. Completed work has been removed; it lives in git history (and the README) rather than here.
 
-Each item carries a rough priority: **[very high]** / **[high]** / **[med]** / **[low]**, split as **[low now / high later]** where the value depends on the model settling first. **[?]** marks an item that still needs clarification or expansion before it's actionable — see the notes on each. Items are grouped by the generator they belong to, plus cross-cutting sections for the viewer, the schema, quality, and packaging. Within a section they're ordered high → low.
+Each item carries a rough priority: **[very high]** / **[high]** / **[med]** / **[low]**, split as **[low now / high later]** where the value depends on the model settling first. **[?]** marks an item that still needs clarification before it's actionable; treat these as **very low** priority — parked until clarified, ordered last in their section. Items are grouped by the generator they belong to, plus cross-cutting sections for the viewer, the schema, quality, and packaging. Within a section they're ordered high → low.
 
 ## Generator — gdvb-sockets-graph
 
