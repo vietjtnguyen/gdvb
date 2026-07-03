@@ -11,10 +11,15 @@ Common tasks: `just bundle <generator>` / `just bundle-all`; `just format` (blac
 
 ## Branching & git workflow
 
-- **Feature branches are `dev-*`, kebab-case** (e.g. `dev-doxygen-graph`, `dev-legend-counts`). These are the only branches that merge into `main`; one branch per unit of work.
-- **`main` is the trunk.** All finished work lands here. It's owned by the orchestrator, who reviews and merges; feature work happens on `dev-*` branches, not directly on `main`.
-- **`agent1` / `agent2` / `agent3` are not feature branches** — they exist only because a git worktree can't check out `main` while `main`'s own worktree holds it. Treat each as a local clone/trunk of `main` that a subagent's worktree sits on; a subagent branches its `dev-*` work off that tip. They are never merged as-is.
-- **Semi-linear history: rebase, then merge with a merge commit.** Before merging, rebase the `dev-*` branch onto the current `main` so its commits replay cleanly on top, then merge with an explicit merge commit (`--no-ff`). **No squashing** (preserve the individual commits) and **no fast-forwarding** (always create the merge commit, so `main`'s first-parent history reads as one merge per feature).
+- **Feature branches are `dev-*`, kebab-case** (e.g. `dev-doxygen-graph`, `dev-legend-counts`). One branch per unit of work; they are the only branches that carry feature commits.
+- **`main` is the trunk**, owned by the orchestrator. All finished work lands here. Feature work happens on `dev-*` branches, never directly on `main`.
+- **`agent1-main` / `agent2-main` / `agent3-main` are per-worktree copies of `main`, not feature branches.** They exist only because a git worktree can't check out `main` while `main`'s own worktree holds it. Each subagent treats its `agentN-main` as its local `main`: it keeps that branch in sync with the real `main` (fast-forward it, like a pull), branches its `dev-*` work off it, and integrates back onto it. They are never themselves "merged" — the orchestrator advances `main` to them.
+- **Integration flow (semi-linear):**
+  1. Subagent syncs its `agentN-main` up to the current `main` (`git merge --ff-only main`).
+  2. Subagent rebases its `dev-*` branch onto `agentN-main` so its commits replay cleanly on top.
+  3. Subagent merges `dev-*` into `agentN-main` with an explicit merge commit (`git merge --no-ff dev-*`). **No squashing** (individual commits preserved); the `--no-ff` merge commit is what makes each feature one merge in first-parent history.
+  4. Orchestrator, in the `main` worktree, advances the trunk: `git merge --ff-only agentN-main`. Integrations are **serialized** — after each one `main` moves, so the next subagent must re-run step 1 (re-sync, re-rebase) before its own integration.
+- **On "no fast-forward":** the *feature* integration (step 3, `dev-*` → `agentN-main`) is always `--no-ff` so a merge commit records it. Step 4 *is* a fast-forward, and that's correct — it only advances the `main` pointer onto an already-recorded merge commit; it never collapses a feature into the trunk without one.
 
 **Markdown files (this one, README.md, BACKLOG.md) soft-wrap: write each paragraph or list item as one line, however long, and let the editor/viewer wrap it for display.** Don't hard-wrap at a fixed column — a wrapped paragraph turns a one-sentence edit into a multi-line diff every time the text reflows.
 
