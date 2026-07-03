@@ -11,6 +11,8 @@ sudo ./gdvb-sockets-graph | ./gdvb-render > sockets.html
 
 The project aims for standalone zero-dependency scripts, separation of data and view concerns with the graph model JSON as the seam, offline/no-network, and a domain generic viewer.
 
+![Screenshot of a process/socket capture after using mark, undirected BFS, and pin to arrange](./screenshot.png)
+
 ## How it works
 
 A **generator** does one job: read *something* (a filesystem, a build directory, a running process's `/proc`, a language server) and print a JSON graph model to stdout. The **viewer**, `gdvb-render`, does the other: read that JSON (stdin or a file) and write one offline HTML page. Neither imports the other — the JSON model is the only contract between them ("the model is the seam"), so writing a new generator is just emitting that shape, and the viewer never needs to know what domain it's rendering.
