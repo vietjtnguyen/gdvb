@@ -348,6 +348,8 @@ Check things off as they land.
       under it" plus name-based heuristics, or leaning on each ecosystem's own
       first-party marker where one exists (a compile_commands.json entry's directory
       being under the project root vs. a system include path, etc.).
+- [ ] Add a generator that reads a GraphViz dot file and adapts it to this JSON format
+- [ ] Add a generator that reads a PlantUML component diagram (this is probably the only one that maps decently) and adapts it to this JSON format
 
 ## Viewer / UX
 
