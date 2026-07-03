@@ -1,17 +1,15 @@
 # gdvb
 
-**Turn anything with structure — a running system, a codebase, a filesystem — into an interactive, offline graph you can explore in a browser.**
+gdvb is two things: small **generator** scripts that snapshot something into a generic JSON graph model, and **`gdvb-render`** which takes those graph models and produces a self-contained HTML file containing the data and an interactive graph visualization and inspection tool.
 
-gdvb is for understanding structure. It targets subjects with many entities — dozens to hundreds, not millions — connected by relationships that are hard to follow as a flat list. Below that range a graph adds little; well above it, layout stops helping. Within it — a host's sockets and their processes, a codebase's call graph, a build's dependency DAG — the relationships are what matter, so the tool lays them out, filters them, and traces through them.
-
-gdvb is two things: small **generator** scripts that snapshot something into a generic JSON graph model, and **`gdvb-render`**, one domain-agnostic **viewer** that turns any such model into a single self-contained HTML file. Open it anywhere — no server, no internet, no install.
-
-The most useful generator today is **`gdvb-sockets-graph`**: it captures every open socket on a Linux host (TCP/UDP/UNIX), the processes behind them, and the process tree, so you can *see* who's listening, who's connected to whom, and how data actually flows — something `ss`/`lsof`/`netstat` can't show you, since they only give you a flat list. But sockets are just one generator; the JSON model is a generic typed directed graph, so anything that emits that shape gets the same viewer for free — a directory tree, a build's dependency DAG, a codebase's call graph all ship today.
+For example, the `gdvb-sockets-graph` generator captures every open socket on a Linux host (TCP/UDP/UNIX), the processes behind them, and the process tree. Bundled with the viewer it lets you see and explore the entire process tree and all of the sockets each process is associated with. But sockets are just one generator; the JSON model is a generic typed directed graph, so anything that emits that shape gets the same viewer for free — a directory tree, a build's dependency DAG, a codebase's call graph, etc.
 
 ```bash
 sudo ./gdvb-sockets-graph | ./gdvb-render > sockets.html
 # open sockets.html in a browser
 ```
+
+The project aims for standalone zero-dependency scripts, separation of data and view concerns with the graph model JSON as the seam, offline/no-network, and a domain generic viewer.
 
 ## How it works
 
