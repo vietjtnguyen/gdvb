@@ -59,6 +59,31 @@ ALL_OPS = [
     "inodes",
 ]
 
+# One concrete line per op for --help, phrased "disables the 'X' scrub; otherwise
+# ..." so the full --help output reads as a list of what the scrubber does, not a
+# list of negations you have to mentally invert - see the module docstring above
+# for the full rationale behind each op.
+OP_HELP = {
+    "ids": "disables the 'ids' scrub; otherwise node ids are rewritten to opaque "
+    "tokens (n0, n1, ...), stripping the pid/ip/inode embedded in them",
+    "ips": "disables the 'ips' scrub; otherwise non-loopback IPv4/IPv6 addresses "
+    "are replaced with a placeholder (port kept)",
+    "hostname": "disables the 'hostname' scrub; otherwise the capture hostname "
+    "(meta.host) is replaced everywhere it appears",
+    "users": "disables the 'users' scrub; otherwise usernames/uids and the "
+    "username component of home-dir paths are redacted",
+    "pids": "disables the 'pids' scrub; otherwise pids/ppids and the socket "
+    "'owners:' line are removed from display",
+    "cmdline": "disables the 'cmdline' scrub; otherwise command-line arguments "
+    "are dropped, keeping just the program name",
+    "unix-paths": "disables the 'unix-paths' scrub; otherwise the directory of "
+    "UNIX-socket paths is redacted, keeping the basename",
+    "timestamp": "disables the 'timestamp' scrub; otherwise meta.captured is "
+    "replaced with 'n/a'",
+    "inodes": "disables the 'inodes' scrub; otherwise the inode: <N> field is "
+    "removed from socket tooltips",
+}
+
 # ---------------------------------------------------------------------------
 # IP redaction (generic)
 # ---------------------------------------------------------------------------
@@ -371,7 +396,7 @@ def main():
             "--no-" + op,
             dest="no_" + op.replace("-", "_"),
             action="store_true",
-            help="disable the '%s' scrub" % op,
+            help=OP_HELP[op],
         )
     args = ap.parse_args()
 
